@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseAssignmentIndex, parseCourseGrades, parseSessionCookie } from "../dist/moodle.js";
+import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseQuizIndex, parseAssignmentIndex, parseCourseGrades, parseSessionCookie } from "../dist/moodle.js";
 import { normalizeSiteUrl } from "../dist/store.js";
 
 const TEST_TOKEN = "test-token";
@@ -394,6 +394,17 @@ test("an account the mobile API refuses is offered a browser session and nothing
   assert.doesNotMatch(await readFile(join(home, "sites.json"), "utf8"), /restricted-token/);
 });
 
+test("a refused call returns an error and leaves the server running", async () => {
+  const path = join(home, "sites.json");
+  const saved = await readFile(path, "utf8");
+  await writeFile(path, JSON.stringify({ ...JSON.parse(saved), refused: { url: siteUrl, token: "restricted-token" } }));
+  assert.match((await callTool("moodle_grades_overview", { site: "refused" })).error, /refuses/);
+  // An unobserved rejection would have ended the process by now.
+  await new Promise((ok) => setTimeout(ok, 50));
+  assert.ok(Array.isArray(await callTool("moodle_list_sites")));
+  await writeFile(path, saved);
+});
+
 test("logout forgets the token", async () => {
   assert.match(await callTool("moodle_logout", { site: siteUrl }), /Logged out/);
   assert.match((await callTool("moodle_whoami")).error, /moodle_login/);
@@ -574,7 +585,7 @@ test("course grades skip category rows that carry only an indent column, as on M
 
 test("page parsers report an unknown layout instead of an empty list", () => {
   assert.throws(() => parseCourseGrades("<p>new theme</p>"), /layout/);
-  assert.throws(() => parseAssignmentIndex('<table class="generaltable"><tr><td>x</td></tr></table>'), /layout/);
+  assert.throws(() => parseAssignmentIndex('<table class="generaltable"><tr><td>x</td><td>y</td></tr></table>'), /layout/);
   assert.deepEqual(parseAssignmentIndex("<p>There are no assignments</p>"), []);
 });
 
@@ -597,4 +608,19 @@ test("authorizedFileUrl respects a site in a subfolder", () => {
   const url = authorizedFileUrl(site, "https://x.edu/moodle/pluginfile.php/1/a.pdf");
   assert.equal(url.pathname, "/moodle/webservice/pluginfile.php/1/a.pdf");
   assert.throws(() => authorizedFileUrl(site, "https://x.edu/other/pluginfile.php/1/a.pdf"), /Refusing/);
+});
+
+test("a course with nothing to list is empty, and an unknown table is an error", () => {
+  // Captured shape from a real site: a header and a one-cell spacer row.
+  const empty = '<table class="generaltable"><thead><tr><th>Topic</th><th>Name</th></tr></thead><tbody><tr class="lastrow"><td colspan="5"><div class="tabledivider"></div></td></tr></tbody></table>';
+  assert.deepEqual(parseAssignmentIndex(empty), []);
+  assert.deepEqual(parseQuizIndex(empty), []);
+  const unknown = '<table class="generaltable"><tbody><tr><td>Essay</td><td>Monday</td></tr></tbody></table>';
+  assert.throws(() => parseAssignmentIndex(unknown), /layout/);
+  assert.throws(() => parseQuizIndex(unknown), /layout/);
+});
+
+test("quiz list reads the relative links a real Moodle prints", () => {
+  const html = '<table class="generaltable"><tbody><tr><td>Week 1</td><td><a href="view.php?id=12">Quiz 1</a></td><td>Monday</td><td>8.00</td></tr></tbody></table>';
+  assert.deepEqual(parseQuizIndex(html), [{ quizid: null, cmid: 12, section: "Week 1", name: "Quiz 1", closes_text: "Monday", grade: "8.00" }]);
 });

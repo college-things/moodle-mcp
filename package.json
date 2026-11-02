@@ -1,6 +1,6 @@
 {
   "name": "moodle-mcp",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "MCP server that connects AI assistants to any Moodle site",
   "type": "module",
   "bin": {

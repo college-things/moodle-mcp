@@ -10,12 +10,12 @@ Requires Node.js 22 or newer.
 
 ### Claude Desktop
 
-Download `moodle-mcp-1.1.0.mcpb` from the [latest release](https://github.com/college-things/moodle-mcp/releases/latest) and open it.
+Download `moodle-mcp-1.1.1.mcpb` from the [latest release](https://github.com/college-things/moodle-mcp/releases/latest) and open it.
 
 ### Claude Code
 
 ```bash
-npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.1.0/moodle-mcp-1.1.0.tgz
+npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.1.1/moodle-mcp-1.1.1.tgz
 ```
 
 ```bash
@@ -160,6 +160,7 @@ To rotate the master key, start once with the new key in `MOODLE_MCP_MASTER_KEY`
 | Where | Covered |
 | --- | --- |
 | `do.ipo.kpi.ua`, a real school site on Moodle 4.5.6 | Courses, grades, pages, assignments, quiz lists, file download, reading PDF, `.doc`, `.docx`, `.ppt` and `.zip`. Its forums had no discussions, it had no upcoming deadlines, and its teachers block quiz review. Nothing was uploaded |
+| `iekportal.com.ua`, a real school site whose mobile API refuses the test account | Inside a signed-in browser, with the parser logic pasted into the page: the course list, deadlines and course contents calls, and the grade, assignment and quiz pages across 9 courses. This found a false error on courses with no assignments, since fixed. One course's grade page answers "invalid user", which the site reports for that account |
 | Moodle 3.11, 4.1, 4.5 and 5.0 in Docker, mobile service on | Deadlines, quiz attempts and review, forums, and the full homework flow: draft, replace, online text, hand in, no-draft assignments, submission statements, locks |
 | The same four versions, mobile service off | Browser-session mode, and that it creates no quiz attempt. Course contents need 4.0 or newer |
 | Moodle 4.5 in Docker, hosted mode | Full OAuth sign-in with a real MCP client over HTTP, reading tools, no write tools, nothing readable on disk. The container image builds and starts |
@@ -168,7 +169,7 @@ To rotate the master key, start once with the new key in `MOODLE_MCP_MASTER_KEY`
 Not tested:
 
 - Homework upload on a real school's site, because a test would hand in real work.
-- An account on `iekportal.com.ua`: the saved login is refused API access, and only the public checks ran.
+- A full browser-session sign-in on `iekportal.com.ua`, which needs a user to paste their own cookie. The parts it relies on were checked inside a signed-in browser instead.
 - Hosted mode on a public deployment, or from a real phone app.
 - Opening the `.mcpb` bundle in Claude Desktop. Its server was unpacked and run directly.
 

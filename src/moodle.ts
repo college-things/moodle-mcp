@@ -419,12 +419,18 @@ export function parseCourseGrades(html: string) {
   return items;
 }
 
+/** A course with nothing to list still prints the table, with only a header and a one-cell spacer row. */
+const hasDataRows = (html: string): boolean =>
+  elements(html, "table")
+    .filter((t) => /generaltable/.test(t.attrs))
+    .some((t) => elements(t.inner, "tr").some((row) => elements(row.inner, "td").length > 1));
+
 /** Parses /mod/assign/index.php, the course-wide list. Reading it does not count as viewing any assignment. */
 export function parseAssignmentIndex(html: string) {
   const assignLink = /href="([^"]*\/mod\/assign\/view\.php\?id=(\d+)[^"]*)"/;
   const table = elements(html, "table").find((t) => assignLink.test(t.inner));
   if (!table) {
-    if (/<table\b[^>]*generaltable/.test(html)) throw layoutError("the course assignment list");
+    if (hasDataRows(html)) throw layoutError("the course assignment list");
     return [];
   }
   const assignments = [];
@@ -510,7 +516,7 @@ export function parseQuizIndex(html: string) {
   const quizLink = /href="((?:[^"]*\/mod\/quiz\/)?view\.php\?id=(\d+)[^"]*)"/;
   const table = elements(html, "table").find((t) => quizLink.test(t.inner));
   if (!table) {
-    if (/<table\b[^>]*generaltable/.test(html)) throw layoutError("the course quiz list");
+    if (hasDataRows(html)) throw layoutError("the course quiz list");
     return [];
   }
   const quizzes = [];
