@@ -1,0 +1,11 @@
+{
+  "name": "moodle",
+  "version": "0.1.0",
+  "description": "Read-only access to any Moodle site: courses, grades, deadlines, assignments and quiz results",
+  "mcpServers": {
+    "moodle": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/dist/index.js"]
+    }
+  }
+}
