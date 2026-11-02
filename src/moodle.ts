@@ -159,14 +159,16 @@ export async function callMoodle(
   site: Pick<TokenSite, "url" | "token"> | Pick<SessionSite, "url" | "session">,
   wsfunction: string,
   params: Record<string, unknown> = {},
+  /** Text as stored, for writing back, rather than as displayed. */
+  options: { raw?: boolean } = {},
 ): Promise<any> {
   if ("session" in site) return callAjax(site, wsfunction, params);
   const body = encodeParams(params);
   body.set("wstoken", site.token);
   body.set("wsfunction", wsfunction);
   body.set("moodlewsrestformat", "json");
-  body.set("moodlewssettingfilter", "true");
-  body.set("moodlewssettingfileurl", "true");
+  body.set("moodlewssettingfilter", options.raw ? "false" : "true");
+  body.set("moodlewssettingfileurl", options.raw ? "false" : "true");
   const data = await postJson(`${site.url}/webservice/rest/server.php`, body, "application/x-www-form-urlencoded");
   if (data && typeof data === "object" && data.exception) {
     if (data.errorcode === "invalidtoken") {
@@ -243,6 +245,25 @@ export function authorizedFileUrl(site: Pick<TokenSite, "url" | "token">, fileUr
   }
   url.searchParams.set("token", site.token);
   return url;
+}
+
+/** Puts files in one new draft area and returns its id. Nothing reaches the assignment until the area is saved to it. */
+export async function uploadDraftFiles(site: Pick<TokenSite, "url" | "token">, files: { name: string; bytes: Buffer }[]): Promise<number> {
+  let itemid = 0;
+  for (const file of files) {
+    const body = new FormData();
+    body.set("token", site.token);
+    body.set("filearea", "draft");
+    body.set("itemid", String(itemid));
+    body.set("file_1", new Blob([new Uint8Array(file.bytes)]), file.name);
+    const res = await moodleFetch(`${site.url}/webservice/upload.php`, { method: "POST", body, redirect: "error", signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) throw new MoodleError(`Upload of ${file.name} failed with HTTP ${res.status}`);
+    const data: any = await res.json();
+    const uploaded = Array.isArray(data) ? data[0] : undefined;
+    if (!uploaded?.itemid) throw new MoodleError(`Upload of ${file.name} failed: ${data?.error ?? data?.message ?? "Moodle gave no reason"}`, data?.errorcode);
+    itemid = uploaded.itemid;
+  }
+  return itemid;
 }
 
 /** Redirects are refused because the request carries the token or the session cookie. */

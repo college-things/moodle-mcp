@@ -1,39 +1,37 @@
 # moodle-mcp
 
-MCP server that gives AI assistants read-only access to any Moodle site through the official Moodle mobile web service, with a more limited browser-session mode for sites that turned that service off. No site-specific setup: give it the site's URL and sign in.
+MCP server that connects AI assistants to any Moodle site through the official Moodle mobile web service, with a more limited browser-session mode for sites where that service is unavailable. No site-specific setup: give it the site's URL and sign in.
+
+Ask things like "what's due this week?", "summarize the lecture PDF in my history course", "how am I doing in maths?" or "upload `essay.docx` to the Essay assignment".
 
 ## Install
 
-Requires Node.js 20 or newer.
+Requires Node.js 22 or newer.
 
-```bash
-npm install
-npm run build
-```
+### Claude Desktop
+
+Download `moodle-mcp-1.0.0.mcpb` from the [latest release](https://github.com/college-things/moodle-mcp/releases/latest) and open it.
 
 ### Claude Code
 
-This repository is also a Claude Code plugin. To try it for one session:
-
 ```bash
-claude --plugin-dir /path/to/moodle-mcp
+npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.0.0/moodle-mcp-1.0.0.tgz
 ```
 
-Or register the server directly:
-
 ```bash
-claude mcp add moodle -- node /path/to/moodle-mcp/dist/index.js
+claude mcp add moodle -- moodle-mcp
 ```
 
-### Claude Desktop and other MCP clients
+The repository is also a Claude Code plugin. After cloning it and running `npm install`, try it with `claude --plugin-dir /path/to/moodle-mcp`.
+
+### Other MCP clients
+
+After the global install above:
 
 ```json
 {
   "mcpServers": {
-    "moodle": {
-      "command": "node",
-      "args": ["/path/to/moodle-mcp/dist/index.js"]
-    }
+    "moodle": { "command": "moodle-mcp" }
   }
 }
 ```
@@ -43,7 +41,7 @@ claude mcp add moodle -- node /path/to/moodle-mcp/dist/index.js
 Ask the assistant to log in to your site, or run:
 
 ```bash
-node dist/index.js login https://your.moodle.site
+moodle-mcp login https://your.moodle.site
 ```
 
 Either way, a form opens on `127.0.0.1` in your browser, so your password never passes through the chat. The password goes only to your Moodle site and is not stored.
@@ -52,7 +50,7 @@ Sites with single sign-on or a captcha can't use a password here. The form expla
 
 ### Sites with the mobile service off
 
-If the site reports web services or the mobile service as disabled, the form switches to browser-session mode and has no password field. You sign in on the site as usual, copy the value of the `MoodleSession` cookie from your browser's developer tools, and paste it into the form on `127.0.0.1`. `moodle_check_site` shows which mode a site needs (`sign_in`).
+If the site reports web services or the mobile service as disabled, or refuses them to your account after you sign in, the form switches to browser-session mode and has no password field. You sign in on the site as usual, copy the value of the `MoodleSession` cookie from your browser's developer tools, and paste it into the form on `127.0.0.1`. `moodle_check_site` shows which mode a site needs (`sign_in`).
 
 The session ends when you log out on the site or it times out, and then you repeat these steps.
 
@@ -68,13 +66,20 @@ The session ends when you log out on the site or it times out, and then you repe
 | `moodle_deadlines` | Upcoming and overdue activities across all courses |
 | `moodle_assignments`, `moodle_assignment_status` | Instructions, due dates, your submission, grade and feedback |
 | `moodle_quizzes`, `moodle_quiz_attempt_review` | Quiz dates and limits, your attempts and scores, review of finished attempts |
+| `moodle_forums`, `moodle_forum_discussions`, `moodle_forum_posts` | Announcements and course discussions |
+| `moodle_read_file` | Text of PDF, `.docx`, `.pptx`, `.xlsx`, HTML and plain text course files, for analysis |
 | `moodle_download_file` | Saves a course file to a temporary folder (50 MB limit) |
+| `moodle_save_assignment_submission` | Uploads your files or text to an assignment, usually as a draft |
+| `moodle_submit_assignment` | Hands in a saved draft for grading, after you confirm the assignment's name |
 
 ## Limits
 
-- **Read-only by design.** It can't start, answer or submit quizzes or assignments, and it never reads the questions of an attempt in progress.
+- **No quiz taking, on purpose.** It can't start, answer or submit quizzes, and it never reads the questions of an attempt in progress. Having an AI answer graded tests would be cheating, so this won't be added. It can show results and, where the teacher allows, review finished attempts.
+- **Homework is your own work, and you stay in control.** The assistant should only upload files you name. Replacing files, handing in, and saving on assignments with no drafts each need an explicit confirmation. Moodle's submission statement is shown for you to accept yourself. Hidden folders and key files can't be uploaded.
+- **Homework tools run only on the local server,** and need the mobile service. Browser-session mode and hosted mode can't change assignments.
+- **Some files have no readable text.** Older `.doc` and `.ppt` files, archives and scanned PDFs can only be downloaded.
 - **It sees what your account sees.** Quiz review works only when the teacher allows it, and quizzes you can't currently access are listed by `moodle_course_contents` but not by `moodle_quizzes`.
-- **Browser-session mode covers less.** With the mobile service off, only these work: `moodle_list_courses`, `moodle_grades_overview`, `moodle_course_grades`, `moodle_deadlines`, `moodle_assignments`, `moodle_whoami` and `moodle_download_file`.
+- **Browser-session mode covers less.** In this mode, only these work: `moodle_list_courses`, `moodle_grades_overview`, `moodle_course_grades`, `moodle_deadlines`, `moodle_assignments`, `moodle_whoami` and `moodle_download_file`.
   - `moodle_assignments` gives names, submission status, grade and the due date as the site words it (Moodle 5.0 and newer also give an exact `due`), without instructions, files or `assignid`.
   - Grades keep the site's own number format, and have no item id or graded date.
   - `moodle_course_contents`, `moodle_course_pages`, `moodle_assignment_status`, `moodle_quizzes` and `moodle_quiz_attempt_review` report that they are unavailable. Moodle does not expose them to AJAX on 4.5, and reading their pages would mean opening activities, which can mark them as viewed. This mode never opens quiz pages at all.
@@ -147,6 +152,17 @@ To rotate the master key, start once with the new key in `MOODLE_MCP_MASTER_KEY`
 - **Consent phishing.** Anyone can register a client and send a victim an authorization link. If the victim signs in, that client gets read access to their Moodle data. The page names the requesting app and where it returns to, and warns about this, but client names are self-declared. `MOODLE_MCP_ALLOWED_REDIRECT_HOSTS` closes this by allowing only apps you name.
 - **Prompt injection.** A malicious course page can still try to instruct the user's assistant. It can only ever reach that user's own data.
 
+## What has been tested
+
+| Where | Covered |
+| --- | --- |
+| `do.ipo.kpi.ua`, a real school site on Moodle 4.5.6 | Courses, grades, pages, assignments, quiz lists, file download, PDF and `.docx` reading, forums (no discussions to read there). Quiz review is blocked by its teachers, and it had no upcoming deadlines. Nothing was uploaded |
+| Moodle 4.5 in Docker, mobile service on | The full homework flow: draft, replace, online text, hand in, no-draft assignments, submission statements, locks. Also forum posts |
+| Moodle 3.11, 4.1, 4.5 and 5.0 in Docker, mobile service off | Browser-session mode |
+| Mock servers, in `npm test` | All tools, sign-in forms and hosted mode |
+
+Homework upload has not run on a real school's site, because a test would hand in real work. Hosted mode has not run with a real phone client or a real Moodle site.
+
 ## Security
 
 These notes describe the local stdio server. Hosted mode is covered above.
@@ -155,12 +171,14 @@ These notes describe the local stdio server. Hosted mode is covered above.
 - In browser-session mode the same file holds the session cookie, unencrypted. **Treat it like a password: until the session ends it allows anything your account can do on the site, not only reading.** This server only reads with it, but anyone who gets the file could do more. Log out on the site to end the session; `moodle_logout` only forgets the cookie on this computer.
 - Tokens and session cookies are only sent to the site that issued them, and requests carrying a session cookie never follow redirects.
 - Site URLs must use HTTPS, except on `localhost`.
+- The homework tools read local files, so a malicious course page could try to talk the assistant into uploading something private. Check the file names your client shows before approving these tools, and don't set them to run without asking.
 - Text from Moodle is written by other people, so a malicious course page could try to instruct the assistant. The server tells assistants to treat it as data. Check the address shown on the login form before typing your password.
 
 ## Development
 
 ```bash
+npm install
 npm test
 ```
 
-Tests run the built server over stdio and HTTP against mock Moodle servers, so they need no account.
+`scripts/pack-release.sh` builds the release files. Tests run the built server over stdio and HTTP against mock Moodle servers, so they need no account.

@@ -62,13 +62,14 @@ ${passwordLogin ? passwordForm : ssoIntro} Sign in on the site yourself, open it
   );
 }
 
-function sessionFormHtml(siteUrl: string, sitename: string, error?: string): string {
+function sessionFormHtml(siteUrl: string, sitename: string, restricted: boolean, error?: string): string {
   const site = escapeHtml(siteUrl);
+  const reason = restricted ? "This site refuses mobile API calls for your account" : "This site has its mobile service turned off";
   return page(
     "Moodle login",
     `<h1>Moodle login</h1><p>${escapeHtml(sitename)}<br><small>${site}</small></p>
 ${error ? `<p class="err">${escapeHtml(error)}</p>` : ""}
-<p>This site has its mobile service turned off, so moodle-mcp has to use your browser's session. You sign in on the site, not here.</p>
+<p>${reason}, so moodle-mcp has to use your browser's session. You sign in on the site, not here.</p>
 <ol><li><a href="${site}/login/index.php" target="_blank" rel="noreferrer">Sign in on the site</a> as usual.</li>
 <li>On that tab, open developer tools (F12), then Application in Chrome or Edge, or Storage in Firefox or Safari, then Cookies.</li>
 <li>Copy the value of the cookie whose name starts with <code>MoodleSession</code>. If its name has anything after that, paste it as <code>name=value</code>.</li></ol>
@@ -88,8 +89,10 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
   const probe = await probeSite(siteUrl);
   // SSO sites have no password login, but a pasted security key still works there.
   const { sitename, mobileApi, passwordLogin } = probe;
+  // A site can have the service on and still refuse it to some accounts, which only shows after sign-in.
+  let restrictedAccount = false;
   const render = (error?: string): string =>
-    mobileApi ? formHtml(siteUrl, sitename, passwordLogin, error) : sessionFormHtml(siteUrl, sitename, error);
+    mobileApi && !restrictedAccount ? formHtml(siteUrl, sitename, passwordLogin, error) : sessionFormHtml(siteUrl, sitename, restrictedAccount, error);
   const secret = randomBytes(24).toString("base64url");
   let resolve!: (result: LoginResult) => void;
   let reject!: (err: Error) => void;
@@ -120,7 +123,7 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
     });
     req.on("end", async () => {
       const fields = new URLSearchParams(body);
-      if (!mobileApi) {
+      if (!mobileApi || restrictedAccount) {
         try {
           const cookie = parseSessionCookie(fields.get("cookie") ?? "");
           const { sesskey, fullname, userid } = await readSession({ url: siteUrl, cookie });
@@ -138,6 +141,10 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
       try {
         const token = pasted || (await requestToken(siteUrl, fields.get("username") ?? "", fields.get("password") ?? ""));
         const { info, restricted } = await identifyToken(siteUrl, token);
+        if (restricted) {
+          restrictedAccount = true;
+          return respond(200, render());
+        }
         const key = await saveSite({
           url: siteUrl,
           token,
@@ -145,8 +152,7 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
           fullname: info.fullname,
           userid: info.userid,
         });
-        const note = restricted ? "<p>This site restricts API access for your account, so some tools may not work.</p>" : "";
-        respond(200, page("Signed in", `<h1>Signed in</h1>${note}<p>You can close this tab and return to your chat.</p>`));
+        respond(200, page("Signed in", "<h1>Signed in</h1><p>You can close this tab and return to your chat.</p>"));
         finish();
         resolve({ site: key, sitename: info.sitename, fullname: info.fullname });
       } catch (err) {

@@ -10,7 +10,7 @@ async function cliLogin(url: string): Promise<void> {
   // The form server is unref'd so it cannot hold a stdio server open; here it must.
   const keepAlive = setInterval(() => {}, 1000);
   const result = await form.done.finally(() => clearInterval(keepAlive));
-  console.error(`Signed in to ${result.site}${result.fullname ? ` as ${result.fullname}` : ", but the site restricts API access"}`);
+  console.error(`Signed in to ${result.site}${result.fullname ? ` as ${result.fullname}` : ""}`);
 }
 
 async function main(): Promise<void> {
@@ -24,6 +24,8 @@ async function main(): Promise<void> {
     return startHttpServer();
   }
   if (command) throw new Error(`Unknown command "${command}". Usage: moodle-mcp [login <site-url> | http]`);
+  // Stdout carries the protocol here, and the PDF library logs font warnings with console.log.
+  console.log = console.error;
   await createMcpServer().connect(new StdioServerTransport());
 }
 

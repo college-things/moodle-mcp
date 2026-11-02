@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { strToU8, zipSync } from "fflate";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,7 +39,52 @@ const functions = {
     attempt: { state: "finished" },
     questions: [{ slot: 1, type: "multichoice", status: "Correct", mark: "1.00", html: '<input type="radio" checked>A<input type="radio">B' }],
   }),
+  mod_assign_get_assignments: () => ({
+    courses: [
+      {
+        assignments: [
+          {
+            id: 21,
+            name: "Essay",
+            submissiondrafts: 1,
+            configs: [
+              { subtype: "assignsubmission", plugin: "file", name: "enabled", value: "1" },
+              { subtype: "assignsubmission", plugin: "file", name: "maxfilesubmissions", value: "2" },
+              { subtype: "assignsubmission", plugin: "onlinetext", name: "enabled", value: "1" },
+            ],
+          },
+          { id: 22, name: "Instant", submissiondrafts: 0, configs: [{ subtype: "assignsubmission", plugin: "onlinetext", name: "enabled", value: "1" }] },
+        ],
+      },
+    ],
+  }),
+  mod_assign_get_submission_status: () => ({
+    lastattempt: {
+      canedit: submission.status !== "submitted",
+      submission: {
+        status: submission.status,
+        plugins: [
+          { type: "file", fileareas: [{ area: "submission_files", files: submission.files.map((filename) => ({ filename })) }] },
+          { type: "onlinetext", editorfields: [{ name: "onlinetext", text: submission.text, format: 1 }] },
+        ],
+      },
+    },
+  }),
+  mod_assign_save_submission: () => {
+    submission.status = "draft";
+    return [];
+  },
+  mod_assign_submit_for_grading: () => {
+    submission.status = "submitted";
+    return [];
+  },
+  mod_forum_get_forums_by_courses: () => [{ id: 31, cmid: 32, name: "News", type: "news", numdiscussions: 1 }],
+  mod_forum_get_forum_discussions: () => ({ discussions: [{ discussion: 41, name: "Welcome", message: "<p>Hello</p>", userfullname: "Teacher", numreplies: 0 }] }),
+  mod_forum_get_discussion_posts: () => ({ posts: [{ id: 51, subject: "Welcome", message: "<p>Hello</p>", author: { fullname: "Teacher" } }] }),
 };
+
+const submission = { status: "new", files: [], text: "" };
+const uploads = [];
 
 const SESSION_COOKIE = "MoodleSessionabc=sess1";
 const SESSKEY = "Key123abc";
@@ -139,18 +185,29 @@ const mock = createServer((req, res) => {
     if (mobile !== "on") return sessionSite(req, res, body);
     if (req.url === "/login/token.php") {
       const form = new URLSearchParams(body);
+      if (form.get("password") === "restricted") return json({ token: "restricted-token" });
       return json(form.get("password") === "right" ? { token: TEST_TOKEN } : { error: "Invalid login", errorcode: "invalidlogin" });
+    }
+    if (req.url === "/webservice/upload.php") {
+      uploads.push(/filename="([^"]+)"/.exec(body)?.[1]);
+      return json([{ itemid: 777, filename: uploads.at(-1) }]);
     }
     if (req.url === "/webservice/rest/server.php") {
       const form = new URLSearchParams(body);
       const fn = form.get("wsfunction");
       calls.push(Object.fromEntries(form));
+      if (form.get("wstoken") === "restricted-token") return json({ exception: "x", errorcode: "accessexception", message: "no" });
       if (form.get("wstoken") !== TEST_TOKEN) return json({ exception: "x", errorcode: "invalidtoken" });
       return json(functions[fn]?.() ?? { exception: "x", errorcode: "invalidrecord", message: `unknown ${fn}` });
     }
     if (req.url.startsWith("/webservice/pluginfile.php/1/notes.txt")) {
       res.writeHead(200, { "Content-Type": "text/plain" });
       return res.end("notes");
+    }
+    if (req.url.startsWith("/webservice/pluginfile.php/1/lecture.docx")) {
+      const xml = "<w:document><w:p><w:t>First &amp; line</w:t></w:p><w:p><w:t>Другий рядок</w:t></w:p></w:document>";
+      res.writeHead(200, { "Content-Type": "application/octet-stream" });
+      return res.end(zipSync({ "word/document.xml": strToU8(xml) }));
     }
     res.writeHead(404);
     res.end();
@@ -195,11 +252,13 @@ after(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-test("every tool is read-only except session management", async () => {
+test("only sign-in and assignment tools can change anything, and no tool touches a quiz attempt", async () => {
   const { tools } = await client.listTools();
   const writers = tools.filter((t) => !t.annotations.readOnlyHint).map((t) => t.name).sort();
-  assert.deepEqual(writers, ["moodle_login", "moodle_logout"]);
-  assert.ok(!tools.some((t) => /submit|start|save|process/.test(t.name)));
+  assert.deepEqual(writers, ["moodle_login", "moodle_logout", "moodle_save_assignment_submission", "moodle_submit_assignment"]);
+  assert.ok(!tools.some((t) => /quiz.*(start|save|process|submit|answer)|(start|save|process|submit|answer).*quiz/.test(t.name)));
+  const source = await readFile("dist/tools.js", "utf8");
+  assert.doesNotMatch(source, /mod_quiz_(start_attempt|save_attempt|process_attempt|get_attempt_data)/);
 });
 
 test("tools explain that login is needed", async () => {
@@ -259,6 +318,74 @@ test("downloads site files and keeps the token on the site", async () => {
   assert.equal(await readFile(file.path, "utf8"), "notes");
   await rm(file.path);
   assert.match((await callTool("moodle_download_file", { url: "https://evil.example/pluginfile.php/1/a" })).error, /Refusing/);
+});
+
+test("reads the text of office files and refuses formats it cannot read", async () => {
+  const read = await callTool("moodle_read_file", { url: `${siteUrl}/pluginfile.php/1/lecture.docx` });
+  assert.equal(read.text, "First & line\nДругий рядок");
+  assert.equal(read.next_offset, null);
+});
+
+test("reads forums", async () => {
+  const [forum] = await callTool("moodle_forums", { courseid: 3 });
+  const [discussion] = await callTool("moodle_forum_discussions", { forumid: forum.forumid });
+  assert.equal(discussion.message, "Hello");
+  const [post] = await callTool("moodle_forum_posts", { discussionid: discussion.discussionid });
+  assert.equal(post.author, "Teacher");
+});
+
+test("homework stays a draft until the name is confirmed", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "moodle-mcp-hw-"));
+  const homework = join(dir, "homework.txt");
+  await writeFile(homework, "my work");
+
+  const saved = await callTool("moodle_save_assignment_submission", { assignid: 21, file_paths: [homework] });
+  assert.equal(saved.status, "draft");
+  assert.equal(saved.handed_in, false);
+  assert.equal(uploads.at(-1), "homework.txt");
+  const save = calls.findLast((c) => c.wsfunction === "mod_assign_save_submission");
+  assert.equal(save["plugindata[files_filemanager]"], "777");
+  // Moodle fails or blanks the text when a save leaves it out.
+  assert.equal(save["plugindata[onlinetext_editor][text]"], "");
+
+  submission.files = ["homework.txt"];
+  assert.match((await callTool("moodle_save_assignment_submission", { assignid: 21, file_paths: [homework] })).error, /replace/);
+  assert.match((await callTool("moodle_submit_assignment", { assignid: 21, confirm_name: "essay" })).error, /does not match/);
+  assert.ok(!calls.some((c) => c.wsfunction === "mod_assign_submit_for_grading"));
+  assert.equal((await callTool("moodle_submit_assignment", { assignid: 21, confirm_name: "Essay" })).handed_in, true);
+  assert.match((await callTool("moodle_save_assignment_submission", { assignid: 21, online_text: "late" })).error, /cannot be changed/);
+  await rm(dir, { recursive: true });
+});
+
+test("assignments without drafts need the name before saving", async () => {
+  submission.status = "new";
+  submission.files = [];
+  const before = calls.filter((c) => c.wsfunction === "mod_assign_save_submission").length;
+  assert.match((await callTool("moodle_save_assignment_submission", { assignid: 22, online_text: "x" })).error, /no drafts/);
+  assert.equal(calls.filter((c) => c.wsfunction === "mod_assign_save_submission").length, before);
+});
+
+test("uploads refuse hidden folders and key files", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "moodle-mcp-hw-"));
+  const hidden = join(dir, ".ssh");
+  await mkdir(hidden);
+  await writeFile(join(hidden, "notes.txt"), "secret");
+  await writeFile(join(dir, "id_ed25519"), "secret");
+  const count = uploads.length;
+  for (const path of [join(hidden, "notes.txt"), join(dir, "id_ed25519")]) {
+    assert.match((await callTool("moodle_save_assignment_submission", { assignid: 21, file_paths: [path] })).error, /Refusing/);
+  }
+  assert.equal(uploads.length, count);
+  await rm(dir, { recursive: true });
+});
+
+test("an account the mobile API refuses is offered a browser session and nothing is stored", async () => {
+  const alias = siteUrl.replace("127.0.0.1", "localhost");
+  const text = await callTool("moodle_login", { url: alias });
+  const formUrl = /open (http:\S+)\./.exec(text)[1];
+  const res = await fetch(formUrl, { method: "POST", body: new URLSearchParams({ username: "student", password: "restricted" }) });
+  assert.match(await res.text(), /refuses mobile API calls for your account[\s\S]*name="cookie"/);
+  assert.doesNotMatch(await readFile(join(home, "sites.json"), "utf8"), /restricted-token/);
 });
 
 test("logout forgets the token", async () => {
