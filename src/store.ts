@@ -1,16 +1,36 @@
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export interface Site {
+interface SiteInfo {
   url: string;
-  token: string;
   sitename?: string;
   fullname?: string;
   userid?: number;
 }
 
-type Sites = Record<string, Site>;
+export interface TokenSite extends SiteInfo {
+  token: string;
+}
+
+/** A browser session the user signed in to themselves, for sites with the mobile service off. */
+export interface SessionSite extends SiteInfo {
+  session: { cookie: string; sesskey: string };
+}
+
+export type Site = TokenSite | SessionSite;
+
+export type Sites = Record<string, Site>;
+
+/** The sites one caller may use. Tools reach Moodle tokens only through this. */
+export interface SiteStore {
+  list(): Promise<Sites>;
+  resolve(name?: string): Promise<Site>;
+  remove(key: string): Promise<boolean>;
+}
+
+export const localSiteStore: SiteStore = { list: loadSites, resolve: resolveSite, remove: removeSite };
 
 function storePath(): string {
   const base = process.env.MOODLE_MCP_HOME ?? join(homedir(), ".config", "moodle-mcp");
@@ -27,13 +47,17 @@ export async function loadSites(): Promise<Sites> {
   }
 }
 
-async function saveSites(sites: Sites): Promise<void> {
-  const path = storePath();
+/** Replaces the file in one step, so a crash cannot leave half of it behind. */
+export async function writePrivateFile(path: string, text: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  const tmp = `${path}.${process.pid}.tmp`;
-  await writeFile(tmp, JSON.stringify(sites, null, 2), { mode: 0o600 });
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, text, { mode: 0o600 });
   await rename(tmp, path);
   await chmod(path, 0o600);
+}
+
+async function saveSites(sites: Sites): Promise<void> {
+  await writePrivateFile(storePath(), JSON.stringify(sites, null, 2));
 }
 
 export function siteKey(url: string): string {
@@ -59,7 +83,10 @@ export async function removeSite(key: string): Promise<boolean> {
 
 /** Picks a site by key or URL; the name may be omitted when only one is stored. */
 export async function resolveSite(name?: string): Promise<Site> {
-  const sites = await loadSites();
+  return pickSite(await loadSites(), name);
+}
+
+export function pickSite(sites: Sites, name?: string): Site {
   const keys = Object.keys(sites);
   if (name) {
     let key = name;

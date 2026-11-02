@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
-import { callMoodle, getPublicConfig, htmlToText, MoodleError, requestToken } from "./moodle.js";
+import { callMoodle, MoodleError, parseSessionCookie, probeSite, readSession, requestToken } from "./moodle.js";
 import { normalizeSiteUrl, saveSite } from "./store.js";
 
 const FORM_LIFETIME_MS = 10 * 60_000;
@@ -18,14 +18,26 @@ export interface LoginForm {
   formUrl: string;
   siteUrl: string;
   sitename: string;
+  /** The mobile service is off, so the form asks for a browser session instead of a password. */
+  sessionMode: boolean;
   done: Promise<LoginResult>;
 }
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
-function page(title: string, body: string): string {
+/** A valid token can still be refused by site policy, which is not a failed login. */
+export async function identifyToken(siteUrl: string, token: string): Promise<{ info: any; restricted: boolean }> {
+  try {
+    return { info: await callMoodle({ url: siteUrl, token }, "core_webservice_get_site_info"), restricted: false };
+  } catch (err) {
+    if (!(err instanceof MoodleError) || err.errorcode !== "accessexception") throw err;
+    return { info: {}, restricted: true };
+  }
+}
+
+export function page(title: string, body: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title>
 <style>body{font:16px system-ui;max-width:26rem;margin:4rem auto;padding:0 1rem;color:#222;background:#fff}
 label{display:block;margin:1rem 0 .25rem}input{width:100%;padding:.5rem;font:inherit;box-sizing:border-box}
@@ -50,6 +62,22 @@ ${passwordLogin ? passwordForm : ssoIntro} Sign in on the site yourself, open it
   );
 }
 
+function sessionFormHtml(siteUrl: string, sitename: string, error?: string): string {
+  const site = escapeHtml(siteUrl);
+  return page(
+    "Moodle login",
+    `<h1>Moodle login</h1><p>${escapeHtml(sitename)}<br><small>${site}</small></p>
+${error ? `<p class="err">${escapeHtml(error)}</p>` : ""}
+<p>This site has its mobile service turned off, so moodle-mcp has to use your browser's session. You sign in on the site, not here.</p>
+<ol><li><a href="${site}/login/index.php" target="_blank" rel="noreferrer">Sign in on the site</a> as usual.</li>
+<li>On that tab, open developer tools (F12), then Application in Chrome or Edge, or Storage in Firefox or Safari, then Cookies.</li>
+<li>Copy the value of the cookie whose name starts with <code>MoodleSession</code>. If its name has anything after that, paste it as <code>name=value</code>.</li></ol>
+<form method="post"><label for="c">Session cookie</label><input id="c" name="cookie" type="password" autocomplete="off" required autofocus>
+<button>Use session</button></form>
+<p><small>Treat this cookie like a password: it can do anything you can on the site until the session ends. moodle-mcp only reads with it, sends it only to the address above and stores it in a file only your account can read. It stops working when you log out on the site or the session times out.</small></p>`,
+  );
+}
+
 let active: { siteUrl: string; form: LoginForm; server: Server } | undefined;
 
 /** Serves a one-time form on loopback, so credentials never pass through the chat. */
@@ -57,13 +85,11 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
   const siteUrl = normalizeSiteUrl(input);
   if (active?.siteUrl === siteUrl) return active.form;
   active?.server.close();
-  const config = await getPublicConfig(siteUrl);
-  if (!config.enablewebservices || !config.enablemobilewebservice) {
-    throw new Error(`${siteUrl} has mobile web services turned off, so an administrator would need to enable them.`);
-  }
-  const sitename = htmlToText(config.sitename);
+  const probe = await probeSite(siteUrl);
   // SSO sites have no password login, but a pasted security key still works there.
-  const passwordLogin = config.typeoflogin === 1;
+  const { sitename, mobileApi, passwordLogin } = probe;
+  const render = (error?: string): string =>
+    mobileApi ? formHtml(siteUrl, sitename, passwordLogin, error) : sessionFormHtml(siteUrl, sitename, error);
   const secret = randomBytes(24).toString("base64url");
   let resolve!: (result: LoginResult) => void;
   let reject!: (err: Error) => void;
@@ -84,7 +110,7 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
     };
     const port = (server.address() as AddressInfo).port;
     if (req.headers.host !== `127.0.0.1:${port}` || req.url !== `/${secret}`) return respond(404, "Not found");
-    if (req.method === "GET") return respond(200, formHtml(siteUrl, sitename, passwordLogin));
+    if (req.method === "GET") return respond(200, render());
     if (req.method !== "POST") return respond(405, "Method not allowed");
     let body = "";
     req.setEncoding("utf8");
@@ -94,18 +120,24 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
     });
     req.on("end", async () => {
       const fields = new URLSearchParams(body);
+      if (!mobileApi) {
+        try {
+          const cookie = parseSessionCookie(fields.get("cookie") ?? "");
+          const { sesskey, fullname, userid } = await readSession({ url: siteUrl, cookie });
+          const key = await saveSite({ url: siteUrl, session: { cookie, sesskey }, sitename, fullname, userid });
+          respond(200, page("Signed in", "<h1>Signed in</h1><p>You can close this tab and return to your chat.</p>"));
+          finish();
+          resolve({ site: key, sitename, fullname: fullname ?? "your account" });
+        } catch (err) {
+          const expired = err instanceof MoodleError && err.errorcode === "sessionexpired";
+          respond(401, render(expired ? "Moodle did not accept this cookie. Check that you are signed in on the site and that you copied all of it." : (err as Error).message));
+        }
+        return;
+      }
       const pasted = fields.get("token")?.trim();
       try {
         const token = pasted || (await requestToken(siteUrl, fields.get("username") ?? "", fields.get("password") ?? ""));
-        // A valid token can still be refused by site policy, which is not a failed login.
-        let info: any = {};
-        let restricted = false;
-        try {
-          info = await callMoodle({ url: siteUrl, token }, "core_webservice_get_site_info");
-        } catch (err) {
-          if (!(err instanceof MoodleError) || err.errorcode !== "accessexception") throw err;
-          restricted = true;
-        }
+        const { info, restricted } = await identifyToken(siteUrl, token);
         const key = await saveSite({
           url: siteUrl,
           token,
@@ -119,7 +151,7 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
         resolve({ site: key, sitename: info.sitename, fullname: info.fullname });
       } catch (err) {
         const message = pasted ? "Moodle did not accept this security key." : (err as Error).message;
-        respond(401, formHtml(siteUrl, sitename, passwordLogin, message));
+        respond(401, render(message));
       }
     });
   });
@@ -139,7 +171,7 @@ export async function startLoginForm(input: string): Promise<LoginForm> {
   });
   server.unref();
   const port = (server.address() as AddressInfo).port;
-  const form: LoginForm = { formUrl: `http://127.0.0.1:${port}/${secret}`, siteUrl, sitename, done };
+  const form: LoginForm = { formUrl: `http://127.0.0.1:${port}/${secret}`, siteUrl, sitename, sessionMode: !mobileApi, done };
   active = { siteUrl, form, server };
   return form;
 }
