@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { clientConfig } from "./clients.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { openInBrowser, startLoginForm } from "./login.js";
 import { createMcpServer } from "./tools.js";
@@ -15,6 +18,18 @@ async function cliLogin(url: string): Promise<void> {
 
 async function main(): Promise<void> {
   const [command, arg] = process.argv.slice(2);
+  if (command === "config") {
+    console.log(clientConfig(arg));
+    return;
+  }
+  if (command === "browser-install") {
+    const child = spawn(process.execPath, [fileURLToPath(new URL("./cli.js", import.meta.resolve("playwright/package.json"))), "install", "chromium"], { stdio: "inherit" });
+    await new Promise<void>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", code => code === 0 ? resolve() : reject(new Error(`Browser install failed (${code}).`)));
+    });
+    return;
+  }
   if (command === "login") {
     if (!arg) throw new Error("Usage: moodle-mcp login <site-url>");
     return cliLogin(arg);
@@ -23,7 +38,7 @@ async function main(): Promise<void> {
     const { startHttpServer } = await import("./http.js");
     return startHttpServer();
   }
-  if (command) throw new Error(`Unknown command "${command}". Usage: moodle-mcp [login <site-url> | http]`);
+  if (command) throw new Error(`Unknown command "${command}". Usage: moodle-mcp [login <site-url> | browser-install | config <codex|antigravity> | http]`);
   // Stdout carries the protocol here, and the PDF library logs font warnings with console.log.
   console.log = console.error;
   await createMcpServer().connect(new StdioServerTransport());

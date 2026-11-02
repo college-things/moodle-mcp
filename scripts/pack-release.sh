@@ -9,6 +9,7 @@ cd "$root"
 rm -rf release
 mkdir release
 npm ci
+node dist/index.js browser-install
 npm test
 npm pack --pack-destination release
 

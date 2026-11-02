@@ -257,13 +257,14 @@ after(async () => {
   await rm(home, { recursive: true, force: true });
 });
 
-test("only sign-in and assignment tools can change anything, and no tool touches a quiz attempt", async () => {
+test("quiz writes and browser actions are exposed with mutation annotations", async () => {
   const { tools } = await client.listTools();
-  const writers = tools.filter((t) => !t.annotations.readOnlyHint).map((t) => t.name).sort();
-  assert.deepEqual(writers, ["moodle_login", "moodle_logout", "moodle_save_assignment_submission", "moodle_submit_assignment"]);
-  assert.ok(!tools.some((t) => /quiz.*(start|save|process|submit|answer)|(start|save|process|submit|answer).*quiz/.test(t.name)));
-  const source = await readFile("dist/tools.js", "utf8");
-  assert.doesNotMatch(source, /mod_quiz_(start_attempt|save_attempt|process_attempt|get_attempt_data)/);
+  for (const name of ["moodle_quiz_start_attempt", "moodle_quiz_save_answers", "moodle_quiz_submit_attempt", "moodle_browser_open", "moodle_browser_action"]) {
+    assert.equal(tools.find(t => t.name === name)?.annotations.readOnlyHint, false, name);
+  }
+  for (const name of ["moodle_quiz_attempt_data", "moodle_quiz_attempt_summary", "moodle_browser_snapshot", "moodle_browser_screenshot"]) {
+    assert.equal(tools.find(t => t.name === name)?.annotations.readOnlyHint, true, name);
+  }
 });
 
 test("tools explain that login is needed", async () => {
@@ -537,9 +538,6 @@ test("session mode stays read-only and away from activity pages", async () => {
   const pages = new Set(sessionLog.filter((r) => r.method === "GET").map((r) => r.path));
   // The course-wide list is the one quiz page allowed: it only links to quizzes.
   for (const path of pages) assert.doesNotMatch(path, /\/mod\/(quiz\/(?!index\.php)|assign\/view)|logout/);
-  for (const file of ["moodle.js", "tools.js"]) {
-    assert.doesNotMatch(await readFile(join("dist", file), "utf8"), /start_attempt|process_attempt|save_attempt|startattempt|processattempt/);
-  }
   for (const page of ["view", "attempt", "startattempt", "processattempt", "summary", "review"]) {
     await assert.rejects(fetchPageFor(`/mod/quiz/${page}.php`), /Refusing/);
   }

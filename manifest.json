@@ -2,8 +2,8 @@
   "manifest_version": "0.3",
   "name": "moodle-mcp",
   "display_name": "Moodle",
-  "version": "1.1.1",
-  "description": "Connect to any Moodle site: courses, grades, deadlines, course files, forums, quiz results and homework upload.",
+  "version": "1.2.0",
+  "description": "Connect to Moodle: courses, grades, files, homework upload, quiz completion and real browser control.",
   "author": {
     "name": "moodle-mcp contributors"
   },
