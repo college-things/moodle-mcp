@@ -317,7 +317,8 @@ test("nothing usable is stored in plaintext", async () => {
     for (const secret of [alice.token, alice.password, alice.username, alice.fullname, siteOneUrl, tokens.access_token, tokens.refresh_token]) {
       assert.ok(!text.includes(secret), `${file} contains ${secret}`);
     }
-    assert.equal((await stat(file)).mode & 0o777, 0o600);
+    // Windows has no mode bits.
+    if (process.platform !== "win32") assert.equal((await stat(file)).mode & 0o777, 0o600);
   }
   assert.ok(!userFiles[0].includes("alice"));
   assert.doesNotMatch(server.log(), /secret/);
