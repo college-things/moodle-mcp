@@ -116,6 +116,8 @@ const REPORT_PAGES = {
 <tr data-mdl-overview-cmid="2"> <td class=" text-start" data-mdl-overview-item="name" data-mdl-overview-value="Graded report"> <div class="d-flex flex-column"> <div class="fw-bold"> <a href="http://x/mod/assign/view.php?id=2" class="activityname">Graded report</a> </div> <div> Week 2 </div> <div class="ms-2"> </div> </div> </td> <td class=" text-start" data-mdl-overview-item="duedate" data-mdl-overview-value="1793377298"> Friday, 30 October 2026, 4:21 PM </td> <td class=" text-start" data-mdl-overview-item="submissionstatus" data-mdl-overview-value="Submitted for grading"> Submitted for grading </td> <td class=" text-start" data-mdl-overview-item="Grade" data-mdl-overview-value="42.50000"> 42.50 </td> </tr>
 <tr data-mdl-overview-cmid="3"> <td class=" text-start" data-mdl-overview-item="name" data-mdl-overview-value="No deadline"> <div class="d-flex flex-column"> <div class="fw-bold"> <a href="http://x/mod/assign/view.php?id=3" class="activityname">No deadline</a> </div> <div> Week 2 </div> <div class="ms-2"> </div> </div> </td> <td class=" text-start" data-mdl-overview-item="duedate" data-mdl-overview-value=""> - </td> <td class=" text-start" data-mdl-overview-item="submissionstatus" data-mdl-overview-value="No submission"> No submission </td> <td class=" text-start" data-mdl-overview-item="Grade" data-mdl-overview-value=""> - </td> </tr> </tbody></table>`,
   // Follows mod_assign's render_assign_course_index_summary with sections on.
+  "/mod/quiz/index.php": `<table class="generaltable"><thead><tr><th class="header c0">Topic</th><th class="header c1">Name</th><th class="header c2">Quiz closes</th><th class="header c3 lastcol">Grade</th></tr></thead><tbody>
+<tr><td class="cell c0">Week 1</td><td class="cell c1"><a href="http://x/mod/quiz/view.php?id=12">Quiz 1</a></td><td class="cell c2">Monday, 2 November 2026</td><td class="cell c3 lastcol">8.00</td></tr></tbody></table>`,
   "/mod/assign/index.php": `<table class="generaltable"><thead><tr><th class="header c0">Topic</th><th class="header c1">Assignments</th><th class="header c2">Due date</th><th class="header c3">Submission</th><th class="header c4 lastcol">Grade</th></tr></thead><tbody>
 <tr><td class="cell c0">Week 1</td><td class="cell c1"><a href="http://x/mod/assign/view.php?id=21">Essay</a></td><td class="cell c2">Monday, 2 November 2026, 11:59 PM</td><td class="cell c3">Submitted for grading</td><td class="cell c4 lastcol">8.50</td></tr>
 <tr><td class="cell c0"></td><td class="cell c1"><a href="http://x/mod/assign/view.php?id=22">Report</a></td><td class="cell c2">-</td><td class="cell c3">No submission</td><td class="cell c4 lastcol">-</td></tr>
@@ -140,6 +142,9 @@ function sessionSite(req, res, body) {
         : [{ error: false, data: { courses: [{ id: 3, fullname: "Maths <b>101</b>", shortname: "M101", progress: 40, startdate: 1700000000 }], nextoffset: 1 } }];
     } else if (methodname === "core_calendar_get_action_events_by_timesort") {
       answer = [{ error: false, data: { events: [{ name: "Essay is due", timesort: 1800000000, overdue: false, modulename: "assign", course: { id: 3, fullname: "Maths 101" }, url: "http://x/mod/assign/view.php?id=21" }] } }];
+    } else if (methodname === "core_courseformat_get_state") {
+      const state = { section: [{ id: 1, title: "Week 1", cmlist: ["12"] }], cm: [{ id: "12", name: "Quiz 1", module: "quiz", url: "http://x/mod/quiz/view.php?id=12", uservisible: true }] };
+      answer = [{ error: false, data: JSON.stringify(state) }];
     } else answer = fail("servicenotavailable");
     res.writeHead(200, { "Content-Type": "application/json" });
     return res.end(JSON.stringify(answer));
@@ -499,9 +504,17 @@ test("session mode follows Moodle 5.0 to the course overview for assignments", a
   assert.ok(sessionLog.some((r) => r.url === "/course/overview.php?id=3&expand%5B%5D=assign"));
 });
 
+test("session mode lists course contents and quizzes without opening them", async () => {
+  const [section] = await callTool("moodle_course_contents", { courseid: 3 });
+  assert.equal(section.section, "Week 1");
+  assert.deepEqual(section.activities.map((a) => [a.cmid, a.type, a.name]), [[12, "quiz", "Quiz 1"]]);
+  const [quiz] = await callTool("moodle_quizzes", { courseid: 3 });
+  assert.equal(quiz.cmid, 12);
+  assert.equal(quiz.grade, "8.00");
+  assert.equal(quiz.closes_text, "Monday, 2 November 2026");
+});
+
 test("session mode says plainly what it cannot do", async () => {
-  assert.match((await callTool("moodle_course_contents", { courseid: 3 })).error, /browser-session mode/);
-  assert.match((await callTool("moodle_quizzes", { courseid: 3 })).error, /browser-session mode/);
   assert.match((await callTool("moodle_quiz_attempt_review", { attemptid: 9 })).error, /browser-session mode/);
   assert.match((await callTool("moodle_assignment_status", { assignid: 1 })).error, /browser-session mode/);
 });
@@ -511,11 +524,14 @@ test("session mode stays read-only and away from activity pages", async () => {
   const writes = sessionLog.filter((r) => r.method !== "GET" && r.path !== "/lib/ajax/service.php");
   assert.deepEqual(writes, []);
   const pages = new Set(sessionLog.filter((r) => r.method === "GET").map((r) => r.path));
-  for (const path of pages) assert.doesNotMatch(path, /\/mod\/(quiz|assign\/view)|logout/);
+  // The course-wide list is the one quiz page allowed: it only links to quizzes.
+  for (const path of pages) assert.doesNotMatch(path, /\/mod\/(quiz\/(?!index\.php)|assign\/view)|logout/);
   for (const file of ["moodle.js", "tools.js"]) {
     assert.doesNotMatch(await readFile(join("dist", file), "utf8"), /start_attempt|process_attempt|save_attempt|startattempt|processattempt/);
   }
-  await assert.rejects(fetchPageFor("/mod/quiz/view.php"), /Refusing/);
+  for (const page of ["view", "attempt", "startattempt", "processattempt", "summary", "review"]) {
+    await assert.rejects(fetchPageFor(`/mod/quiz/${page}.php`), /Refusing/);
+  }
 });
 
 test("session mode downloads with the cookie and only from the site", async () => {

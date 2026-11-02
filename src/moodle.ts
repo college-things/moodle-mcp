@@ -4,14 +4,15 @@ const TIMEOUT_MS = 30_000;
 
 /**
  * The only pages session mode may fetch. A session cookie can do anything the user can,
- * so this stays a short list of report pages and never includes an activity's own page:
- * opening one can mark it as viewed, and quiz pages can start attempts.
+ * so this stays a short list of report and course-wide pages and never includes an activity's
+ * own page: opening one can mark it as viewed, and quiz pages can start attempts.
  */
 const READABLE_PAGES = new Set([
   "/user/preferences.php",
   "/grade/report/overview/index.php",
   "/grade/report/user/index.php",
   "/mod/assign/index.php",
+  "/mod/quiz/index.php",
   "/course/overview.php",
 ]);
 
@@ -477,6 +478,61 @@ export function parseAssignmentOverview(html: string) {
   });
 }
 
+/** The JSON state behind the course page, which Moodle 4.0 and newer expose to AJAX. Fetching it marks nothing as viewed. */
+export async function readCourseState(site: Pick<SessionSite, "url" | "session">, courseid: number) {
+  let raw: string;
+  try {
+    raw = await callMoodle(site, "core_courseformat_get_state", { courseid });
+  } catch (err) {
+    if (!(err instanceof MoodleError) || err.errorcode === "sessionexpired") throw err;
+    throw new MoodleError("Course contents are not available in browser-session mode on this site. They need Moodle 4.0 or newer.", err.errorcode);
+  }
+  const state = JSON.parse(raw);
+  const cms = new Map<number, any>((state.cm ?? []).map((m: any) => [Number(m.id), m]));
+  return (state.section ?? []).map((section: any) => ({
+    section: htmlToText(section.title),
+    activities: (section.cmlist ?? [])
+      .map((id: unknown) => cms.get(Number(id)))
+      .filter(Boolean)
+      .map((m: any) => ({
+        cmid: Number(m.id),
+        type: m.module ?? m.modname,
+        name: htmlToText(m.name),
+        url: m.url ?? null,
+        visible: Boolean(m.uservisible),
+      })),
+  }));
+}
+
+/** Parses /mod/quiz/index.php, the course-wide list. It links to quizzes without opening them. */
+export function parseQuizIndex(html: string) {
+  // Moodle links these relative to the page, unlike its assignment list.
+  const quizLink = /href="((?:[^"]*\/mod\/quiz\/)?view\.php\?id=(\d+)[^"]*)"/;
+  const table = elements(html, "table").find((t) => quizLink.test(t.inner));
+  if (!table) {
+    if (/<table\b[^>]*generaltable/.test(html)) throw layoutError("the course quiz list");
+    return [];
+  }
+  const quizzes = [];
+  let section: string | null = null;
+  for (const row of elements(table.inner, "tr")) {
+    const cells = elements(row.inner, "t[dh]").map((c) => c.inner);
+    const at = cells.findIndex((c) => quizLink.test(c));
+    if (at < 0) continue;
+    if (at > 0) section = orNullText(cells[at - 1]) ?? section;
+    const link = quizLink.exec(cells[at])!;
+    quizzes.push({
+      quizid: null,
+      cmid: Number(link[2]),
+      section,
+      name: htmlToText(cells[at]),
+      closes_text: orNullText(cells[at + 1]),
+      grade: orNullText(cells[at + 2]),
+    });
+  }
+  return quizzes;
+}
+
 /** Moodle 5.0 replaced the assignment list page with a section of its course overview. */
 export async function readAssignments(site: Pick<SessionSite, "url" | "session">, courseid: number) {
   const id = String(courseid);
@@ -486,4 +542,24 @@ export async function readAssignments(site: Pick<SessionSite, "url" | "session">
     if (!(err instanceof MoodleError) || err.errorcode !== "movedtooverview") throw err;
   }
   return parseAssignmentOverview(await fetchPage(site, "/course/overview.php", { id, "expand[]": "assign" }));
+}
+
+/** Moodle 5.0 moved this list into its course overview too. */
+export async function readQuizzes(site: Pick<SessionSite, "url" | "session">, courseid: number) {
+  const id = String(courseid);
+  try {
+    const quizzes = parseQuizIndex(await fetchPage(site, "/mod/quiz/index.php", { id }));
+    return quizzes.map((q) => ({ ...q, url: `${site.url}/mod/quiz/view.php?id=${q.cmid}` }));
+  } catch (err) {
+    if (!(err instanceof MoodleError) || err.errorcode !== "movedtooverview") throw err;
+  }
+  return parseAssignmentOverview(await fetchPage(site, "/course/overview.php", { id, "expand[]": "quiz" })).map((q) => ({
+    quizid: null,
+    cmid: q.cmid,
+    section: q.section,
+    name: q.name,
+    closes_text: q.due_text,
+    grade: q.grade,
+    url: q.url,
+  }));
 }

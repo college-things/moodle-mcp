@@ -10,12 +10,12 @@ Requires Node.js 22 or newer.
 
 ### Claude Desktop
 
-Download `moodle-mcp-1.0.0.mcpb` from the [latest release](https://github.com/college-things/moodle-mcp/releases/latest) and open it.
+Download `moodle-mcp-1.1.0.mcpb` from the [latest release](https://github.com/college-things/moodle-mcp/releases/latest) and open it.
 
 ### Claude Code
 
 ```bash
-npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.0.0/moodle-mcp-1.0.0.tgz
+npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.1.0/moodle-mcp-1.1.0.tgz
 ```
 
 ```bash
@@ -67,7 +67,7 @@ The session ends when you log out on the site or it times out, and then you repe
 | `moodle_assignments`, `moodle_assignment_status` | Instructions, due dates, your submission, grade and feedback |
 | `moodle_quizzes`, `moodle_quiz_attempt_review` | Quiz dates and limits, your attempts and scores, review of finished attempts |
 | `moodle_forums`, `moodle_forum_discussions`, `moodle_forum_posts` | Announcements and course discussions |
-| `moodle_read_file` | Text of PDF, `.docx`, `.pptx`, `.xlsx`, HTML and plain text course files, for analysis |
+| `moodle_read_file` | Text of PDF, `.doc`, `.docx`, `.ppt`, `.pptx`, `.xlsx`, `.zip`, HTML and plain text course files, for analysis |
 | `moodle_download_file` | Saves a course file to a temporary folder (50 MB limit) |
 | `moodle_save_assignment_submission` | Uploads your files or text to an assignment, usually as a draft |
 | `moodle_submit_assignment` | Hands in a saved draft for grading, after you confirm the assignment's name |
@@ -77,12 +77,13 @@ The session ends when you log out on the site or it times out, and then you repe
 - **No quiz taking, on purpose.** It can't start, answer or submit quizzes, and it never reads the questions of an attempt in progress. Having an AI answer graded tests would be cheating, so this won't be added. It can show results and, where the teacher allows, review finished attempts.
 - **Homework is your own work, and you stay in control.** The assistant should only upload files you name. Replacing files, handing in, and saving on assignments with no drafts each need an explicit confirmation. Moodle's submission statement is shown for you to accept yourself. Hidden folders and key files can't be uploaded.
 - **Homework tools run only on the local server,** and need the mobile service. Browser-session mode and hosted mode can't change assignments.
-- **Some files have no readable text.** Older `.doc` and `.ppt` files, archives and scanned PDFs can only be downloaded.
+- **Some files have no readable text.** Scanned PDFs and archives other than `.zip`, such as `.7z` and `.rar`, can only be downloaded.
 - **It sees what your account sees.** Quiz review works only when the teacher allows it, and quizzes you can't currently access are listed by `moodle_course_contents` but not by `moodle_quizzes`.
-- **Browser-session mode covers less.** In this mode, only these work: `moodle_list_courses`, `moodle_grades_overview`, `moodle_course_grades`, `moodle_deadlines`, `moodle_assignments`, `moodle_whoami` and `moodle_download_file`.
+- **Browser-session mode covers less.** In this mode, only these work: `moodle_list_courses`, `moodle_course_contents`, `moodle_quizzes`, `moodle_grades_overview`, `moodle_course_grades`, `moodle_deadlines`, `moodle_assignments`, `moodle_whoami`, `moodle_download_file` and `moodle_read_file`.
+  - `moodle_course_contents` gives sections and activity names without file links, and needs Moodle 4.0 or newer. `moodle_quizzes` gives names, closing dates as the site words them and grades, without attempts.
   - `moodle_assignments` gives names, submission status, grade and the due date as the site words it (Moodle 5.0 and newer also give an exact `due`), without instructions, files or `assignid`.
   - Grades keep the site's own number format, and have no item id or graded date.
-  - `moodle_course_contents`, `moodle_course_pages`, `moodle_assignment_status`, `moodle_quizzes` and `moodle_quiz_attempt_review` report that they are unavailable. Moodle does not expose them to AJAX on 4.5, and reading their pages would mean opening activities, which can mark them as viewed. This mode never opens quiz pages at all.
+  - `moodle_course_pages`, `moodle_assignment_status` and `moodle_quiz_attempt_review` report that they are unavailable. Moodle does not expose them to AJAX on 4.5, and reading their pages would mean opening activities, which can mark them as viewed. The only quiz page this mode opens is the course-wide list, which links to quizzes without starting anything.
   - Report pages are ordinary page views, so they appear in the site's logs and update your last access to the course. They don't mark any activity as viewed.
 - **Browser-session mode is tested on local installs, not yet on a school's site.** The tools above ran against real Moodle 3.11, 4.1, 4.5 and 5.0 installs in Docker with the mobile API off, including Ukrainian, the Classic theme and a custom session cookie name on 4.5. No quiz attempt was created and no activity was marked as viewed. Not checked yet:
   - custom themes from a school or vendor (an unknown layout gives an error, not an empty list)
@@ -114,6 +115,8 @@ The session ends when you log out on the site or it times out, and then you repe
 - It runs as a single process: sign-ins in progress and access tokens are in memory, and the rest is in local files. Running several instances behind a load balancer does not work.
 
 ### Deploy
+
+A `Dockerfile` is included. It stores data in `/data`, so mount a persistent volume there, and pass the variables below. The steps here run the server directly.
 
 1. Create a master key and keep it in your platform's secret store, not in the repository or in backups of the data folder:
 
@@ -156,12 +159,18 @@ To rotate the master key, start once with the new key in `MOODLE_MCP_MASTER_KEY`
 
 | Where | Covered |
 | --- | --- |
-| `do.ipo.kpi.ua`, a real school site on Moodle 4.5.6 | Courses, grades, pages, assignments, quiz lists, file download, PDF and `.docx` reading, forums (no discussions to read there). Quiz review is blocked by its teachers, and it had no upcoming deadlines. Nothing was uploaded |
-| Moodle 4.5 in Docker, mobile service on | The full homework flow: draft, replace, online text, hand in, no-draft assignments, submission statements, locks. Also forum posts |
-| Moodle 3.11, 4.1, 4.5 and 5.0 in Docker, mobile service off | Browser-session mode |
-| Mock servers, in `npm test` | All tools, sign-in forms and hosted mode |
+| `do.ipo.kpi.ua`, a real school site on Moodle 4.5.6 | Courses, grades, pages, assignments, quiz lists, file download, reading PDF, `.doc`, `.docx`, `.ppt` and `.zip`. Its forums had no discussions, it had no upcoming deadlines, and its teachers block quiz review. Nothing was uploaded |
+| Moodle 3.11, 4.1, 4.5 and 5.0 in Docker, mobile service on | Deadlines, quiz attempts and review, forums, and the full homework flow: draft, replace, online text, hand in, no-draft assignments, submission statements, locks |
+| The same four versions, mobile service off | Browser-session mode, and that it creates no quiz attempt. Course contents need 4.0 or newer |
+| Moodle 4.5 in Docker, hosted mode | Full OAuth sign-in with a real MCP client over HTTP, reading tools, no write tools, nothing readable on disk. The container image builds and starts |
+| Mock servers, in `npm test`, on Linux, macOS and Windows | All tools, sign-in forms and hosted mode |
 
-Homework upload has not run on a real school's site, because a test would hand in real work. Hosted mode has not run with a real phone client or a real Moodle site.
+Not tested:
+
+- Homework upload on a real school's site, because a test would hand in real work.
+- An account on `iekportal.com.ua`: the saved login is refused API access, and only the public checks ran.
+- Hosted mode on a public deployment, or from a real phone app.
+- Opening the `.mcpb` bundle in Claude Desktop. Its server was unpacked and run directly.
 
 ## Security
 
