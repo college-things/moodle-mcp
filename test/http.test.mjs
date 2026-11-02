@@ -310,7 +310,7 @@ test("nothing usable is stored in plaintext", async () => {
   const { tokens } = await signIn(server.base, siteOneUrl, accountOf(alice));
   const files = await allFiles(join(server.home, "hosted"));
   assert.ok(files.some((f) => f.endsWith("oauth.enc")));
-  const userFiles = files.filter((f) => f.includes("/users/"));
+  const userFiles = files.filter((f) => /[\\/]users[\\/]/.test(f));
   assert.equal(userFiles.length, 1);
   for (const file of files) {
     const text = await readFile(file, "utf8");

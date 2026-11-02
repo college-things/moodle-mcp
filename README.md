@@ -167,7 +167,7 @@ Homework upload has not run on a real school's site, because a test would hand i
 
 These notes describe the local stdio server. Hosted mode is covered above.
 
-- The access token is stored unencrypted in `~/.config/moodle-mcp/sites.json`, readable only by your user account. Set `MOODLE_MCP_HOME` to use another folder. `moodle_logout` forgets the token on this computer but doesn't revoke it on the site.
+- The access token is stored unencrypted in `~/.config/moodle-mcp/sites.json`, readable only by your user account. On Windows this relies on the permissions of your profile folder, because the file mode has no effect there. Set `MOODLE_MCP_HOME` to use another folder. `moodle_logout` forgets the token on this computer but doesn't revoke it on the site.
 - In browser-session mode the same file holds the session cookie, unencrypted. **Treat it like a password: until the session ends it allows anything your account can do on the site, not only reading.** This server only reads with it, but anyone who gets the file could do more. Log out on the site to end the session; `moodle_logout` only forgets the cookie on this computer.
 - Tokens and session cookies are only sent to the site that issued them, and requests carrying a session cookie never follow redirects.
 - Site URLs must use HTTPS, except on `localhost`.

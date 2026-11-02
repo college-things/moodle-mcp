@@ -281,7 +281,8 @@ test("login form rejects a wrong password, then stores only the token", async ()
   const stored = await readFile(path, "utf8");
   assert.match(stored, /test-token/);
   assert.doesNotMatch(stored, /right/);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  // Windows has no mode bits: there the file relies on the permissions of the user's profile folder.
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 
 test("reads courses, pages and grades", async () => {
@@ -427,7 +428,8 @@ test("session form has no password field and accepts only a signed-in cookie", a
   assert.deepEqual(entry.session, { cookie: SESSION_COOKIE, sesskey: SESSKEY });
   assert.equal(entry.userid, 7);
   assert.equal(entry.fullname, "Test Student");
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  // Windows has no mode bits: there the file relies on the permissions of the user's profile folder.
+  if (process.platform !== "win32") assert.equal((await stat(path)).mode & 0o777, 0o600);
 });
 
 test("session mode reads the signed-in user and courses", async () => {
