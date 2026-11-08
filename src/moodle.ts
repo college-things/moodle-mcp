@@ -54,7 +54,8 @@ export const moodleFetch: MoodleFetch = (url, init) => transport(url, init);
  * Never follows a redirect: a 307 or 308 would post the password or token again to wherever
  * it points, which can be another host or plain http.
  */
-async function postJson(url: string, body: string | URLSearchParams, contentType: string): Promise<any> {
+async function postJson(siteUrl: string, endpoint: string, body: string | URLSearchParams, contentType: string): Promise<any> {
+  const url = `${siteUrl}${endpoint}`;
   const res = await moodleFetch(url, {
     method: "POST",
     body,
@@ -62,15 +63,7 @@ async function postJson(url: string, body: string | URLSearchParams, contentType
     redirect: "manual",
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
-  if (res.status >= 300 && res.status < 400) {
-    let target = "another address";
-    try {
-      target = new URL(res.headers.get("location") ?? "", url).origin;
-    } catch {
-      // An unreadable Location still means the site redirected.
-    }
-    throw new MoodleError(`The site redirected to ${target}. Use the site's final address.`);
-  }
+  if (res.status >= 300 && res.status < 400) throw redirected(siteUrl, endpoint, res.headers.get("location"));
   if (!res.ok) throw new MoodleError(`Moodle answered HTTP ${res.status}`);
   try {
     return await res.json();
@@ -79,10 +72,25 @@ async function postJson(url: string, body: string | URLSearchParams, contentType
   }
 }
 
+/** Names the address a moved site answers at now, so the user can sign in there instead. */
+function redirected(siteUrl: string, endpoint: string, location: string | null): MoodleError {
+  let where = "another address";
+  try {
+    const target = new URL(location ?? "", `${siteUrl}${endpoint}`);
+    const path = new URL(endpoint, "http://x").pathname;
+    const base = target.pathname.endsWith(path) ? target.pathname.slice(0, -path.length) : target.pathname;
+    where = target.origin + base.replace(/\/+$/, "");
+  } catch {
+    // An unreadable Location still means the site redirected.
+  }
+  return new MoodleError(`${siteUrl} redirects to ${where}. Sign in again using that address.`, "redirected");
+}
+
 /** Works without login, so it also tells whether a URL is a usable Moodle. */
 export async function getPublicConfig(siteUrl: string): Promise<any> {
   const data = await postJson(
-    `${siteUrl}/lib/ajax/service-nologin.php?info=tool_mobile_get_public_config`,
+    siteUrl,
+    "/lib/ajax/service-nologin.php?info=tool_mobile_get_public_config",
     JSON.stringify([{ index: 0, methodname: "tool_mobile_get_public_config", args: {} }]),
     "application/json",
   );
@@ -107,7 +115,8 @@ export async function probeSite(siteUrl: string): Promise<SiteProbe> {
   try {
     config = await getPublicConfig(siteUrl);
   } catch (err) {
-    if (!(err instanceof MoodleError) || !(await looksLikeMoodle(siteUrl))) throw err;
+    // A moved site would pass the check below, since every page of it redirects.
+    if (!(err instanceof MoodleError) || err.errorcode === "redirected" || !(await looksLikeMoodle(siteUrl))) throw err;
     return { sitename: new URL(siteUrl).host, url: siteUrl, mobileApi: false, passwordLogin: false, maintenance: false };
   }
   return {
@@ -128,7 +137,8 @@ async function looksLikeMoodle(siteUrl: string): Promise<boolean> {
 /** Exchanges a password for a mobile service token. The password is not kept. */
 export async function requestToken(siteUrl: string, username: string, password: string): Promise<string> {
   const data = await postJson(
-    `${siteUrl}/login/token.php`,
+    siteUrl,
+    "/login/token.php",
     new URLSearchParams({ username, password, service: "moodle_mobile_app" }),
     "application/x-www-form-urlencoded",
   );
@@ -184,7 +194,7 @@ export async function callMoodle(
   body.set("moodlewsrestformat", "json");
   body.set("moodlewssettingfilter", options.raw ? "false" : "true");
   body.set("moodlewssettingfileurl", options.raw ? "false" : "true");
-  const data = await postJson(`${site.url}/webservice/rest/server.php`, body, "application/x-www-form-urlencoded");
+  const data = await postJson(site.url, "/webservice/rest/server.php", body, "application/x-www-form-urlencoded");
   if (data && typeof data === "object" && data.exception) {
     if (data.errorcode === "invalidtoken") {
       throw new MoodleError("Moodle session expired. Call moodle_login to sign in again.", data.errorcode);
