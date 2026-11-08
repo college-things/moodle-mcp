@@ -1,10 +1,10 @@
-FROM node:22-slim AS build
+FROM node:22-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d AS build
 WORKDIR /app
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 RUN npm ci --ignore-scripts && npx tsc
 
-FROM node:22-slim
+FROM node:22-slim@sha256:5ec23b7c622b00547753bc6ffd78085dd868a68aeb41c8e0a1418f033e13d96d
 ENV NODE_ENV=production MOODLE_MCP_HOME=/data MOODLE_MCP_HOST=0.0.0.0 MOODLE_MCP_PORT=3000
 WORKDIR /app
 COPY package.json package-lock.json ./

@@ -523,7 +523,7 @@ test("users cannot make the server contact private addresses", async () => {
 });
 
 test("the address guard classifies addresses and refuses names that resolve privately", async () => {
-  for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fe80::1", "fd00::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "64:ff9b::7f00:1", "2002:7f00:1::", "not-an-ip"]) {
+  for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "::1", "::", "fe80::1", "fd00::1", "::ffff:127.0.0.1", "::ffff:169.254.169.254", "64:ff9b::7f00:1", "2002:7f00:1::", "64:ff9b:1::a00:1", "192.88.99.1", "not-an-ip"]) {
     assert.equal(isPublicAddress(ip), false, ip);
   }
   for (const ip of ["93.184.216.34", "1.1.1.1", "2606:4700:4700::1111", "::ffff:93.184.216.34"]) {

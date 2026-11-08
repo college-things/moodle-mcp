@@ -1,5 +1,5 @@
 import { lstat, realpath } from "node:fs/promises";
-import { basename, extname, sep } from "node:path";
+import { basename, extname } from "node:path";
 import CFB from "cfb";
 import { strFromU8, unzipSync } from "fflate";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
@@ -7,6 +7,9 @@ import WordExtractor from "word-extractor";
 import { htmlToText } from "./moodle.js";
 
 const MAX_UNZIPPED_BYTES = 200 * 1024 * 1024;
+const SECRET_FOLDERS = new Set(["library", "appdata", "keychains"]);
+const SECRET_FILE =
+  /^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key|p12|pfx|kdbx|keychain|keychain-db|ppk|gpg|asc|keystore|jks)$|^(cookies|login data|web data|credentials|credentials\.json|token\.json|sites\.json|oauth\.enc)$/i;
 const PLAIN_TEXT = new Set([".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".py", ".java", ".c", ".cpp", ".h", ".js", ".ts", ".sql", ".tex", ".rtf"]);
 
 /** Word order inside Office XML follows the document, so tags can be replaced where they stand. */
@@ -14,18 +17,32 @@ function officeXmlToText(xml: string, paragraphEnd: RegExp): string {
   return htmlToText(xml.replace(paragraphEnd, "<br>"));
 }
 
-function officeText(bytes: Uint8Array, ext: string): string {
+/**
+ * Unpacked bytes left for one file, shared by every archive inside it. Office files are zips
+ * too, so without one budget an archive of small Office bombs would unpack each to the limit.
+ */
+interface Budget {
+  left: number;
+}
+
+class TooMuchData extends Error {}
+
+function spend(budget: Budget, bytes: number): void {
+  budget.left -= bytes;
+  if (budget.left < 0) throw new TooMuchData("This file unpacks to too much data to read.");
+}
+
+function officeText(bytes: Uint8Array, ext: string, budget: Budget): string {
   const wanted: Record<string, RegExp> = {
     ".docx": /^word\/(document|footnotes)\.xml$/,
     ".pptx": /^ppt\/slides\/slide\d+\.xml$/,
     ".xlsx": /^xl\/(sharedStrings|worksheets\/sheet\d+)\.xml$/,
   };
-  let total = 0;
+  // fflate unpacks into a buffer of the declared size and never grows it, so the declared size is a real cap.
   const entries = unzipSync(bytes, {
     filter: (file) => {
       if (!wanted[ext].test(file.name)) return false;
-      total += file.originalSize;
-      if (total > MAX_UNZIPPED_BYTES) throw new Error("This file unpacks to too much data to read.");
+      spend(budget, file.originalSize);
       return true;
     },
   });
@@ -58,12 +75,10 @@ function pptText(bytes: Buffer): string {
 }
 
 /** Lists an archive and reads the files inside it that have text. */
-async function zipText(bytes: Buffer): Promise<string> {
-  let total = 0;
+async function zipText(bytes: Buffer, budget: Budget): Promise<string> {
   const entries = unzipSync(bytes, {
     filter: (file) => {
-      total += file.originalSize;
-      if (total > MAX_UNZIPPED_BYTES) throw new Error("This archive unpacks to too much data to read.");
+      spend(budget, file.originalSize);
       return !file.name.endsWith("/");
     },
   });
@@ -71,23 +86,32 @@ async function zipText(bytes: Buffer): Promise<string> {
   for (const [name, content] of Object.entries(entries)) {
     // Archives inside archives are listed, not opened, which also stops zip bombs that nest.
     if (extname(name).toLowerCase() === ".zip") continue;
-    const text = await extractText(Buffer.from(content), name, "").catch(() => null);
+    const text = await extractText(Buffer.from(content), name, "", budget).catch((err) => {
+      // A spent budget ends the whole read; any other unreadable entry is just skipped.
+      if (err instanceof TooMuchData) throw err;
+      return null;
+    });
     if (text?.trim()) parts.push(`--- ${name} ---\n${text}`);
   }
   return parts.join("\n\n");
 }
 
 /** Text of a downloaded file, or null when this format can only be saved. */
-export async function extractText(bytes: Buffer, filename: string, contentType: string): Promise<string | null> {
+export async function extractText(
+  bytes: Buffer,
+  filename: string,
+  contentType: string,
+  budget: Budget = { left: MAX_UNZIPPED_BYTES },
+): Promise<string | null> {
   const ext = extname(filename).toLowerCase();
   if (ext === ".pdf" || contentType.includes("application/pdf")) {
     const { text } = await extractPdfText(await getDocumentProxy(new Uint8Array(bytes)), { mergePages: false });
     return (text as string[]).map((page, i) => `[page ${i + 1}]\n${page}`).join("\n\n");
   }
-  if (ext === ".docx" || ext === ".pptx" || ext === ".xlsx") return officeText(bytes, ext);
+  if (ext === ".docx" || ext === ".pptx" || ext === ".xlsx") return officeText(bytes, ext, budget);
   if (ext === ".doc") return (await new WordExtractor().extract(bytes)).getBody();
   if (ext === ".ppt") return pptText(bytes);
-  if (ext === ".zip") return zipText(bytes);
+  if (ext === ".zip") return zipText(bytes, budget);
   if (ext === ".html" || ext === ".htm" || contentType.includes("text/html")) return htmlToText(bytes.toString("utf8"));
   if (PLAIN_TEXT.has(ext) || contentType.startsWith("text/")) return bytes.toString("utf8");
   return null;
@@ -105,9 +129,12 @@ export async function checkUploadPath(path: string, maxBytes: number): Promise<{
     throw new Error(`Cannot read ${path}: no such file.`);
   }
   const name = basename(real);
-  const hidden = real.split(sep).some((part) => part.startsWith("."));
-  if (hidden || /^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key|p12|pfx|kdbx|keychain)$/i.test(name)) {
-    throw new Error(`Refusing to upload ${path}: it is in a hidden folder or looks like a credential file. Copy homework to a normal folder first.`);
+  const parts = real.split(/[\\/]/);
+  const hidden = parts.some((part) => part.startsWith("."));
+  // macOS and Windows keep keychains, browser cookies and saved passwords in these folders, which are not dot folders.
+  const appData = parts.some((part) => SECRET_FOLDERS.has(part.toLowerCase()));
+  if (hidden || appData || SECRET_FILE.test(name)) {
+    throw new Error(`Refusing to upload ${path}: it is in a hidden or app data folder, or looks like a credential file. Copy homework to a normal folder first.`);
   }
   const info = await lstat(real);
   if (!info.isFile()) throw new Error(`Cannot upload ${path}: it is not a file.`);

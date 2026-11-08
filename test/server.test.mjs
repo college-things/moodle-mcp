@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseQuizIndex, parseAssignmentIndex, parseCourseGrades, parseSessionCookie } from "../dist/moodle.js";
+import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseQuizIndex, parseAssignmentIndex, parseCourseGrades, parseSessionCookie, requestToken } from "../dist/moodle.js";
+import { checkUploadPath, extractText } from "../dist/files.js";
 import { normalizeSiteUrl } from "../dist/store.js";
 
 const TEST_TOKEN = "test-token";
@@ -593,6 +594,64 @@ test("encodeParams flattens arrays the way Moodle expects", () => {
 
 test("htmlToText decodes entities and drops scripts", () => {
   assert.equal(htmlToText("<script>x</script><p>A &amp; B</p>&#1058;"), "A & B\nТ");
+});
+
+test("htmlToText stays fast on markup that never closes", () => {
+  for (const html of ["<script ".repeat(200_000), "<style>".repeat(200_000), "<input ".repeat(200_000), "x<".repeat(200_000), `a${"\t".repeat(500_000)}b`]) {
+    const started = Date.now();
+    htmlToText(html);
+    assert.ok(Date.now() - started < 2000, html.slice(0, 10));
+  }
+  assert.equal(htmlToText("<p>a</p><script>x</script>b<style>y</STYLE >c<script>unclosed"), "a\nbcunclosed");
+  assert.equal(htmlToText("<td>a</td>\t \n<p>b</p> <"), "a\nb\n<");
+});
+
+test("password sign-in never follows a redirect, which would post the password elsewhere", async () => {
+  const received = [];
+  const other = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      received.push(body);
+      res.end(JSON.stringify({ token: "stolen" }));
+    });
+  });
+  await new Promise((ok) => other.listen(0, "127.0.0.1", ok));
+  const site = createServer((_req, res) => {
+    res.writeHead(307, { Location: `http://127.0.0.1:${other.address().port}/steal` });
+    res.end();
+  });
+  await new Promise((ok) => site.listen(0, "127.0.0.1", ok));
+  try {
+    await assert.rejects(requestToken(`http://localhost:${site.address().port}`, "alice", "hunter2"), /redirected to/);
+    assert.deepEqual(received, []);
+  } finally {
+    other.close();
+    site.close();
+  }
+});
+
+test("an archive of Office bombs shares one unpack limit", async () => {
+  const bomb = zipSync({ "word/document.xml": new Uint8Array(101 * 1024 * 1024) }, { level: 9 });
+  const archive = Buffer.from(zipSync({ "a.docx": bomb, "b.docx": bomb }, { level: 0 }));
+  await assert.rejects(extractText(archive, "work.zip", ""), /too much data/);
+  const small = zipSync({ "word/document.xml": strToU8("<w:p>Hello</w:p>") });
+  assert.match(await extractText(Buffer.from(zipSync({ "a.docx": small })), "work.zip", ""), /Hello/);
+});
+
+test("uploads refuse files from app data folders and credential stores", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "upload-"));
+  try {
+    for (const [folder, name] of [["Library/Keychains", "login.keychain-db"], ["AppData/Local", "essay.pdf"], ["work", "Login Data"], ["work", "Cookies"]]) {
+      await mkdir(join(dir, folder), { recursive: true });
+      await writeFile(join(dir, folder, name), "secret");
+      await assert.rejects(checkUploadPath(join(dir, folder, name), 1000), /Refusing to upload/, name);
+    }
+    await writeFile(join(dir, "work", "essay.pdf"), "my essay");
+    assert.equal((await checkUploadPath(join(dir, "work", "essay.pdf"), 1000)).name, "essay.pdf");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("normalizeSiteUrl trims page paths and refuses plain http", () => {

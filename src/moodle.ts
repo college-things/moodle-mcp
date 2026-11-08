@@ -50,13 +50,27 @@ export function setMoodleTransport(next: MoodleFetch): void {
 
 export const moodleFetch: MoodleFetch = (url, init) => transport(url, init);
 
+/**
+ * Never follows a redirect: a 307 or 308 would post the password or token again to wherever
+ * it points, which can be another host or plain http.
+ */
 async function postJson(url: string, body: string | URLSearchParams, contentType: string): Promise<any> {
   const res = await moodleFetch(url, {
     method: "POST",
     body,
     headers: { "Content-Type": contentType, Accept: "application/json" },
+    redirect: "manual",
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
+  if (res.status >= 300 && res.status < 400) {
+    let target = "another address";
+    try {
+      target = new URL(res.headers.get("location") ?? "", url).origin;
+    } catch {
+      // An unreadable Location still means the site redirected.
+    }
+    throw new MoodleError(`The site redirected to ${target}. Use the site's final address.`);
+  }
   if (!res.ok) throw new MoodleError(`Moodle answered HTTP ${res.status}`);
   try {
     return await res.json();
@@ -200,8 +214,12 @@ export function htmlToText(html: unknown): string {
       return "";
     }
   };
-  return html
-    .replace(/<(script|style)\b[\s\S]*?<\/\1\s*>/gi, "")
+  const text = dropScripts(html);
+  // A "<" after the last ">" can never close, and every tag pattern below would scan from it
+  // to the end of the text, which takes quadratic time on a file full of them.
+  const lastClose = text.lastIndexOf(">") + 1;
+  const tags = text
+    .slice(0, lastClose)
     .replace(/<input\b[^>]*>/gi, (tag) => {
       const type = /type=["']?(\w+)/i.exec(tag)?.[1]?.toLowerCase();
       if (type === "radio" || type === "checkbox") return /\bchecked\b/i.test(tag) ? "[x] " : "[ ] ";
@@ -211,16 +229,51 @@ export function htmlToText(html: unknown): string {
     .replace(/<(br|\/p|\/div|\/li|\/tr|\/h[1-6])\b[^>]*>/gi, "\n")
     .replace(/<li\b[^>]*>/gi, "- ")
     .replace(/<\/t[dh]>/gi, "\t")
-    .replace(/<[^>]+>/g, "")
+    .replace(/<[^>]+>/g, "");
+  const decoded = (tags + text.slice(lastClose))
     .replace(/&#x([0-9a-f]+);/gi, (_, hex) => fromCode(parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_, dec) => fromCode(parseInt(dec, 10)))
     .replace(/&([a-z]+);/gi, (whole, name) => named[name.toLowerCase()] ?? whole)
     .replace(/\r/g, "")
     .replace(/ {2,}/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n");
+  // A pattern for trailing blanks would retry at every blank of a long run, so lines are trimmed by hand.
+  return decoded
+    .split("\n")
+    .map(trimBlanksEnd)
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function trimBlanksEnd(line: string): string {
+  let end = line.length;
+  while (end > 0 && (line[end - 1] === " " || line[end - 1] === "\t")) end--;
+  return line.slice(0, end);
+}
+
+/**
+ * Removes script and style elements, searching only forward so the time stays linear.
+ * Once a tag has no closing tag left, later openings of it are kept as text, as before.
+ */
+function dropScripts(html: string): string {
+  const open = /<(script|style)\b/gi;
+  const unclosed = new Set<string>();
+  let out = "";
+  let from = 0;
+  for (let m = open.exec(html); m; m = open.exec(html)) {
+    const name = m[1].toLowerCase();
+    if (unclosed.has(name)) continue;
+    const close = new RegExp(`</${name}\\s*>`, "gi");
+    close.lastIndex = open.lastIndex;
+    if (!close.exec(html)) {
+      unclosed.add(name);
+      continue;
+    }
+    out += html.slice(from, m.index);
+    from = open.lastIndex = close.lastIndex;
+  }
+  return out + html.slice(from);
 }
 
 export function isoTime(seconds: unknown): string | null {
