@@ -78,10 +78,15 @@ const localContext: ToolContext = {
  */
 async function privateDownloadDir(): Promise<string> {
   const base = join(tmpdir(), "moodle-mcp");
-  await mkdir(base, { recursive: true, mode: 0o700 });
-  const info = await lstat(base);
-  const uid = process.getuid?.();
-  const ours = info.isDirectory() && (uid === undefined || (info.uid === uid && (info.mode & 0o022) === 0));
+  let ours = false;
+  try {
+    await mkdir(base, { recursive: true, mode: 0o700 });
+    const info = await lstat(base);
+    const uid = process.getuid?.();
+    ours = info.isDirectory() && (uid === undefined || (info.uid === uid && (info.mode & 0o022) === 0));
+  } catch {
+    // Something else already holds that name, such as a file another account left there.
+  }
   return ours ? mkdtemp(join(base, "file-")) : mkdtemp(join(tmpdir(), "moodle-mcp-file-"));
 }
 

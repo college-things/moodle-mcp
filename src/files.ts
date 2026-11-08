@@ -1,5 +1,6 @@
-import { lstat, realpath } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { lstat, open, realpath } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, extname, join } from "node:path";
 import CFB from "cfb";
 import { strFromU8, unzipSync } from "fflate";
 import { extractText as extractPdfText, getDocumentProxy } from "unpdf";
@@ -7,9 +8,9 @@ import WordExtractor from "word-extractor";
 import { htmlToText } from "./moodle.js";
 
 const MAX_UNZIPPED_BYTES = 200 * 1024 * 1024;
-const SECRET_FOLDERS = new Set(["library", "appdata", "keychains"]);
+const SECRET_FOLDERS = new Set(["appdata", "keychains"]);
 const SECRET_FILE =
-  /^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|key|p12|pfx|kdbx|keychain|keychain-db|ppk|gpg|asc|keystore|jks)$|^(cookies|login data|web data|credentials|credentials\.json|token\.json|sites\.json|oauth\.enc)$/i;
+  /^id_(rsa|dsa|ecdsa|ed25519)|\.(pem|p12|pfx|kdbx|keychain|keychain-db|ppk|gpg|asc|keystore|jks)$|^(cookies|login data|web data|credentials|credentials\.json|token\.json|sites\.json|oauth\.enc)$/i;
 const PLAIN_TEXT = new Set([".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".py", ".java", ".c", ".cpp", ".h", ".js", ".ts", ".sql", ".tex", ".rtf"]);
 
 /** Word order inside Office XML follows the document, so tags can be replaced where they stand. */
@@ -121,6 +122,46 @@ export async function extractText(
  * Text from a course page can talk an assistant into uploading the wrong file, and teachers
  * would receive it. Hidden folders and key files are where a computer keeps its secrets.
  */
+const comparable = (path: string): string => path.replace(/[\\/]+/g, "/").replace(/\/$/, "").toLowerCase();
+const inside = (path: string, folder: string): boolean => {
+  const [p, f] = [comparable(path), comparable(folder)];
+  return p === f || p.startsWith(`${f}/`);
+};
+
+/** .key is both a Keynote presentation, which is a zip, and a private key in text form. */
+async function isPrivateKeyFile(real: string): Promise<boolean> {
+  if (extname(real).toLowerCase() !== ".key") return false;
+  try {
+    const handle = await open(real, "r");
+    try {
+      const head = Buffer.alloc(2);
+      await handle.read(head, 0, 2, 0);
+      return head.toString("latin1") !== "PK";
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Not a readable file, such as a Keynote package folder: the file check that follows refuses it.
+    return false;
+  }
+}
+
+/**
+ * macOS keeps keychains, browser cookies and saved passwords in ~/Library, and Windows in AppData.
+ * Neither is a dot folder. Windows also puts the temp folder in AppData, so only the part of a
+ * path below the temp folder is checked there; homework is often saved to temp.
+ */
+async function inSecretFolder(real: string): Promise<boolean> {
+  // Compared as resolved paths, like the file's own, in case the home folder sits behind a symlink.
+  const library = join(await realpath(homedir()).catch(() => homedir()), "Library");
+  // Dropbox, OneDrive, Google Drive and iCloud Drive keep their synced folders here, and homework lives there.
+  const synced = [join(library, "CloudStorage"), join(library, "Mobile Documents")].some((folder) => inside(real, folder));
+  if (inside(real, library) && !synced) return true;
+  const temp = await realpath(tmpdir()).catch(() => tmpdir());
+  const rest = inside(real, temp) ? comparable(real).slice(comparable(temp).length) : comparable(real);
+  return rest.split("/").some((part) => SECRET_FOLDERS.has(part));
+}
+
 export async function checkUploadPath(path: string, maxBytes: number): Promise<{ path: string; name: string; size: number }> {
   let real: string;
   try {
@@ -129,11 +170,8 @@ export async function checkUploadPath(path: string, maxBytes: number): Promise<{
     throw new Error(`Cannot read ${path}: no such file.`);
   }
   const name = basename(real);
-  const parts = real.split(/[\\/]/);
-  const hidden = parts.some((part) => part.startsWith("."));
-  // macOS and Windows keep keychains, browser cookies and saved passwords in these folders, which are not dot folders.
-  const appData = parts.some((part) => SECRET_FOLDERS.has(part.toLowerCase()));
-  if (hidden || appData || SECRET_FILE.test(name)) {
+  const hidden = real.split(/[\\/]/).some((part) => part.startsWith("."));
+  if (hidden || (await inSecretFolder(real)) || SECRET_FILE.test(name) || (await isPrivateKeyFile(real))) {
     throw new Error(`Refusing to upload ${path}: it is in a hidden or app data folder, or looks like a credential file. Copy homework to a normal folder first.`);
   }
   const info = await lstat(real);

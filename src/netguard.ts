@@ -117,7 +117,7 @@ export function createGuardedFetch({ allowPrivate = false, allowedHosts = [] }: 
             } catch {
               // An unreadable Location still means the site redirected.
             }
-            return reject(new MoodleError(`The site redirected to ${target}. Use the site's final address.`));
+            return reject(new MoodleError(`The site redirected to ${target}. Use the site's final address.`, "redirected"));
           }
           const chunks: Buffer[] = [];
           let size = 0;

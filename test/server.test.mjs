@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseQuizIndex, parseAssignmentIndex, parseCourseGrades, parseSessionCookie, requestToken } from "../dist/moodle.js";
+import { authorizedFileUrl, encodeParams, fetchPage, htmlToText, parseQuizIndex, parseAssignmentIndex, parseCourseGrades, parseSessionCookie, probeSite, requestToken } from "../dist/moodle.js";
 import { checkUploadPath, extractText } from "../dist/files.js";
 import { normalizeSiteUrl } from "../dist/store.js";
 
@@ -623,11 +623,27 @@ test("password sign-in never follows a redirect, which would post the password e
   });
   await new Promise((ok) => site.listen(0, "127.0.0.1", ok));
   try {
-    await assert.rejects(requestToken(`http://localhost:${site.address().port}`, "alice", "hunter2"), /redirected to/);
+    const siteUrl = `http://localhost:${site.address().port}`;
+    const elsewhere = `http://127.0.0.1:${other.address().port}/steal`;
+    await assert.rejects(requestToken(siteUrl, "alice", "hunter2"), (err) => err.errorcode === "redirected" && err.message.includes(elsewhere));
     assert.deepEqual(received, []);
   } finally {
     other.close();
     site.close();
+  }
+});
+
+test("a moved site is reported with its new address, not as a browser-session site", async () => {
+  const moved = createServer((req, res) => {
+    // Keeps the path, the way a site that changed domain usually redirects.
+    res.writeHead(308, { Location: `https://new-moodle.example.org/moodle${req.url}` });
+    res.end();
+  });
+  await new Promise((ok) => moved.listen(0, "127.0.0.1", ok));
+  try {
+    await assert.rejects(probeSite(`http://localhost:${moved.address().port}`), (err) => err.errorcode === "redirected" && err.message.includes("redirects to https://new-moodle.example.org/moodle."));
+  } finally {
+    moved.close();
   }
 });
 
@@ -647,8 +663,30 @@ test("uploads refuse files from app data folders and credential stores", async (
       await writeFile(join(dir, folder, name), "secret");
       await assert.rejects(checkUploadPath(join(dir, folder, name), 1000), /Refusing to upload/, name);
     }
-    await writeFile(join(dir, "work", "essay.pdf"), "my essay");
-    assert.equal((await checkUploadPath(join(dir, "work", "essay.pdf"), 1000)).name, "essay.pdf");
+    await writeFile(join(dir, "work", "server.key"), "-----BEGIN PRIVATE KEY-----");
+    await assert.rejects(checkUploadPath(join(dir, "work", "server.key"), 1000), /Refusing to upload/);
+    await writeFile(join(dir, "work", "slides.key"), "PK\x03\x04 keynote");
+    assert.equal((await checkUploadPath(join(dir, "work", "slides.key"), 1000)).name, "slides.key");
+    // ~/Library is refused, except the folders cloud drives sync into.
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = process.env.USERPROFILE = dir;
+    try {
+      for (const [folder, allowed] of [["Library/Application Support/Chrome", false], ["Library/CloudStorage/Dropbox", true], ["Library/Mobile Documents/com~apple~CloudDocs", true]]) {
+        await mkdir(join(dir, folder), { recursive: true });
+        await writeFile(join(dir, folder, "essay.pdf"), "my essay");
+        const check = checkUploadPath(join(dir, folder, "essay.pdf"), 1000);
+        if (allowed) assert.equal((await check).name, "essay.pdf", folder);
+        else await assert.rejects(check, /Refusing to upload/, folder);
+      }
+    } finally {
+      for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v);
+    }
+    // Ordinary folders pass, including one named library outside the home folder's Library.
+    for (const folder of ["work", "library"]) {
+      await mkdir(join(dir, folder), { recursive: true });
+      await writeFile(join(dir, folder, "essay.pdf"), "my essay");
+      assert.equal((await checkUploadPath(join(dir, folder, "essay.pdf"), 1000)).name, "essay.pdf");
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
