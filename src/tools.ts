@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -63,9 +63,7 @@ const localContext: ToolContext = {
   },
   maxDownloadBytes: 50 * 1024 * 1024,
   deliverFile: async ({ filename, bytes, type }) => {
-    const base = join(tmpdir(), "moodle-mcp");
-    await mkdir(base, { recursive: true, mode: 0o700 });
-    const dir = await mkdtemp(join(base, "file-"));
+    const dir = await privateDownloadDir();
     const path = join(dir, filename);
     await writeFile(path, bytes, { mode: 0o600 });
     return { path, bytes: bytes.length, content_type: type };
@@ -73,6 +71,19 @@ const localContext: ToolContext = {
   allowSubmissions: true,
   allowBrowser: true,
 };
+
+/**
+ * A new folder only this user can change. On a shared /tmp another account could create
+ * the moodle-mcp folder first and then swap what is inside it, so that one is used only when it is ours.
+ */
+async function privateDownloadDir(): Promise<string> {
+  const base = join(tmpdir(), "moodle-mcp");
+  await mkdir(base, { recursive: true, mode: 0o700 });
+  const info = await lstat(base);
+  const uid = process.getuid?.();
+  const ours = info.isDirectory() && (uid === undefined || (info.uid === uid && (info.mode & 0o022) === 0));
+  return ours ? mkdtemp(join(base, "file-")) : mkdtemp(join(tmpdir(), "moodle-mcp-file-"));
+}
 
 export function createMcpServer(ctx: ToolContext = localContext): McpServer {
   const server = new McpServer(
