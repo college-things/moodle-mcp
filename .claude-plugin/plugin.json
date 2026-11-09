@@ -1,6 +1,6 @@
 {
   "name": "moodle",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Connect to Moodle: courses, grades, files, homework upload, quiz completion and real browser control.",
   "mcpServers": {
     "moodle": {

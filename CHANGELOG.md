@@ -2,7 +2,7 @@
 
 All notable changes to moodle-mcp are listed here. Versions follow [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 1.2.1 - 2026-11-09
 
 ### Security
 
