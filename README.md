@@ -6,10 +6,10 @@ Ask things like "what's due this week?", "summarize the lecture PDF in my histor
 
 ## Install
 
-Requires Node.js 22 or newer. Install v1.2.0:
+Requires Node.js 22 or newer. Install v1.2.1:
 
 ```bash
-npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.2.0/moodle-mcp-1.2.0.tgz
+npm install -g https://github.com/college-things/moodle-mcp/releases/download/v1.2.1/moodle-mcp-1.2.1.tgz
 moodle-mcp browser-install
 ```
 
@@ -26,7 +26,7 @@ moodle-mcp browser-install
 
 ### Claude Desktop
 
-Download `moodle-mcp-1.2.0.mcpb` from the [v1.2.0 release](https://github.com/college-things/moodle-mcp/releases/tag/v1.2.0) and open it. For browser control, run `moodle-mcp browser-install` once using the global install above. You can also build a bundle from source with `sh scripts/pack-release.sh`.
+Download `moodle-mcp-1.2.1.mcpb` from the [v1.2.1 release](https://github.com/college-things/moodle-mcp/releases/tag/v1.2.1) and open it. For browser control, run `moodle-mcp browser-install` once using the global install above. You can also build a bundle from source with `sh scripts/pack-release.sh`.
 
 ### Claude Code
 
